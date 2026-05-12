@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="ExpandOpenAI.TestConsole/ExpandOpenAI.TestConsole.csproj" />
+  <Project Path="ExpandOpenAI/ExpandOpenAI.csproj" />
+</Solution>
