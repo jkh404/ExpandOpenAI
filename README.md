@@ -41,13 +41,34 @@ dotnet build
 dotnet add <YourProject>.csproj reference .\ExpandOpenAI\ExpandOpenAI.csproj
 ```
 
+## NuGet 打包
+
+仓库内提供了打包脚本：
+
+```powershell
+.\scripts\pack-nuget.ps1 -Version 1.0.0
+```
+
+默认输出目录为 `.\artifacts\nuget`，同时会生成：
+
+- `.nupkg`
+- `.snupkg`
+
+常用参数示例：
+
+```powershell
+.\scripts\pack-nuget.ps1 -Version 1.0.0-preview.1
+.\scripts\pack-nuget.ps1 -Version 1.0.0 -OutputDir .\artifacts\release
+.\scripts\pack-nuget.ps1 -Version 1.0.0 -NoSymbols
+```
+
 ### 基础调用
 
 ```csharp
 using ExpandOpenAI;
 using Microsoft.Extensions.AI;
 
-var client = new DefaultChatClient(new DefaultChatClientOptions
+var client = new OpenAICompatibleChatClient(new OpenAICompatibleChatClientOptions
 {
     Endpoint = new Uri("https://api.openai.com/v1"),
     ApiKey = "<your-api-key>",
@@ -68,7 +89,7 @@ Console.WriteLine(response.Text);
 using ExpandOpenAI;
 using Microsoft.Extensions.AI;
 
-var client = new DefaultChatClient(new DefaultChatClientOptions
+var client = new OpenAICompatibleChatClient(new OpenAICompatibleChatClientOptions
 {
     Endpoint = new Uri("https://api.openai.com/v1"),
     ApiKey = "<your-api-key>",
@@ -98,7 +119,7 @@ await foreach (var update in client.GetStreamingResponseAsync(
 
 ## 环境变量方式
 
-`DefaultChatClient` 支持直接从环境变量读取配置：
+`OpenAICompatibleChatClient` 支持直接从环境变量读取配置：
 
 - `OPENAI_ENDPOINT`
 - `OPENAI_MODEL`
@@ -116,12 +137,12 @@ $env:OPENAI_API_KEY="<your-api-key>"
 ```csharp
 using ExpandOpenAI;
 
-var client = new DefaultChatClient();
+var client = new OpenAICompatibleChatClient();
 ```
 
 ## 配置项说明
 
-`DefaultChatClientOptions` 主要提供以下能力：
+`OpenAICompatibleChatClientOptions` 主要提供以下能力：
 
 | 配置项 | 说明 |
 | --- | --- |
@@ -140,7 +161,7 @@ var client = new DefaultChatClient();
 例如某些兼容服务要求使用自定义认证头：
 
 ```csharp
-var client = new DefaultChatClient(new DefaultChatClientOptions
+var client = new OpenAICompatibleChatClient(new OpenAICompatibleChatClientOptions
 {
     Endpoint = new Uri("https://example.com/v1"),
     ModelId = "my-model",
@@ -176,7 +197,7 @@ using ExpandOpenAI;
 using ExpandOpenAI.Providers.DashScope;
 using Microsoft.Extensions.AI;
 
-var client = new DefaultChatClient(new DefaultChatClientOptions
+var client = new OpenAICompatibleChatClient(new OpenAICompatibleChatClientOptions
 {
     Endpoint = new Uri("https://dashscope.aliyuncs.com/compatible-mode/v1"),
     ApiKey = "<your-api-key>",

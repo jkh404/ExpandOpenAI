@@ -8,10 +8,10 @@ namespace ExpandOpenAI.Internal;
 
 internal sealed class OpenAICompatibleRequestBuilder
 {
-    private readonly DefaultChatClientOptions _options;
+    private readonly OpenAICompatibleChatClientOptions _options;
     private readonly JsonSerializerOptions _serializerOptions;
 
-    public OpenAICompatibleRequestBuilder(DefaultChatClientOptions options, JsonSerializerOptions serializerOptions)
+    public OpenAICompatibleRequestBuilder(OpenAICompatibleChatClientOptions options, JsonSerializerOptions serializerOptions)
     {
         _options = options;
         _serializerOptions = serializerOptions;

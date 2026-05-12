@@ -1,11 +1,31 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <IsPackable>true</IsPackable>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <PackageId>ExpandOpenAI</PackageId>
+    <Title>ExpandOpenAI</Title>
+    <Authors>jkh404</Authors>
+    <Description>OpenAI-compatible IChatClient implementation for Microsoft.Extensions.AI with streaming, tool calling, and multimodal input support.</Description>
+    <PackageTags>OpenAI;AI;Microsoft.Extensions.AI;ChatClient;DashScope;Multimodal</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/jkh404/ExpandOpenAI</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/jkh404/ExpandOpenAI</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
   </PropertyGroup>
-	<ItemGroup>
-		<PackageReference Include="Microsoft.Extensions.AI" Version="10.5.2" />
-	</ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.AI" Version="10.5.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\README.md" Pack="true" PackagePath="\" Visible="false" />
+  </ItemGroup>
+
 </Project>

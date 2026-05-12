@@ -10,7 +10,7 @@ using System.Net;
 
 
 
-var client = new DefaultChatClient(new DefaultChatClientOptions
+var client = new OpenAICompatibleChatClient(new OpenAICompatibleChatClientOptions
 {
     Endpoint = new Uri("https://dashscope.aliyuncs.com/compatible-mode/v1"),
     ApiKey = "",
@@ -52,7 +52,7 @@ await foreach (var item in client.GetStreamingResponseAsync(msg))
 
 
 #region 视觉理解
-//var client = new DefaultChatClient(new DefaultChatClientOptions
+//var client = new OpenAICompatibleChatClient(new OpenAICompatibleChatClientOptions
 //{
 //      Endpoint = new Uri("https://dashscope.aliyuncs.com/compatible-mode/v1"),
 //      ApiKey = "",
