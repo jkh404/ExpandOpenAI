@@ -43,10 +43,16 @@ dotnet add <YourProject>.csproj reference .\ExpandOpenAI\ExpandOpenAI.csproj
 
 ## NuGet 打包
 
-仓库内提供了打包脚本：
+仓库内提供了打包脚本。Windows 下推荐直接用 `cmd` 包装器：
 
 ```powershell
-.\scripts\pack-nuget.ps1 -Version 1.0.0
+.\scripts\pack-nuget.cmd -Version 1.0.0
+```
+
+如果你希望直接执行 PowerShell 脚本：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\pack-nuget.ps1 -Version 1.0.0
 ```
 
 默认输出目录为 `.\artifacts\nuget`，同时会生成：
@@ -57,9 +63,9 @@ dotnet add <YourProject>.csproj reference .\ExpandOpenAI\ExpandOpenAI.csproj
 常用参数示例：
 
 ```powershell
-.\scripts\pack-nuget.ps1 -Version 1.0.0-preview.1
-.\scripts\pack-nuget.ps1 -Version 1.0.0 -OutputDir .\artifacts\release
-.\scripts\pack-nuget.ps1 -Version 1.0.0 -NoSymbols
+.\scripts\pack-nuget.cmd -Version 1.0.0-preview.1
+.\scripts\pack-nuget.cmd -Version 1.0.0 -OutputDir .\artifacts\release
+.\scripts\pack-nuget.cmd -Version 1.0.0 -NoSymbols
 ```
 
 ### 基础调用

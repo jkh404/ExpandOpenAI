@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using ExpandOpenAI.Internal;
 using Microsoft.Extensions.AI;
 
 namespace ExpandOpenAI.Providers.DashScope;
@@ -11,7 +12,7 @@ public sealed class DashScopeAudioContent : OpenAIRequestContent
 {
     public DashScopeAudioContent(DataContent audio)
     {
-        ArgumentNullException.ThrowIfNull(audio);
+        ArgumentGuard.ThrowIfNull(audio, nameof(audio));
         Audio = audio;
     }
 

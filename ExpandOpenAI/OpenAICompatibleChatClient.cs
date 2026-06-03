@@ -23,6 +23,7 @@ public class OpenAICompatibleChatClient : IChatClient
     private readonly OpenAICompatibleResponseParser _responseParser;
     private bool _disposed;
 
+    public HttpClient HttpClient => _httpClient;
     public OpenAICompatibleChatClient()
         : this(OpenAICompatibleChatClientOptions.FromEnvironment())
     {
@@ -33,8 +34,8 @@ public class OpenAICompatibleChatClient : IChatClient
     {
     }
 
-    public OpenAICompatibleChatClient(HttpMessageHandler httpMessageHandler, OpenAICompatibleChatClientOptions options, bool disposeHandler = true)
-        : this(CreateHttpClient(httpMessageHandler, disposeHandler), options, disposeHttpClient: true)
+    public OpenAICompatibleChatClient(HttpMessageHandler httpMessageHandler, OpenAICompatibleChatClientOptions options, bool disposeHandler = true,TimeSpan? timeout = null)
+        : this(CreateHttpClient(httpMessageHandler, disposeHandler, timeout), options, disposeHttpClient: true)
     {
     }
 
@@ -49,12 +50,12 @@ public class OpenAICompatibleChatClient : IChatClient
     {
     }
 
-    private OpenAICompatibleChatClient(HttpClient httpClient, OpenAICompatibleChatClientOptions options, bool disposeHttpClient)
+    public OpenAICompatibleChatClient(HttpClient httpClient, OpenAICompatibleChatClientOptions options, bool disposeHttpClient)
     {
-        ArgumentNullException.ThrowIfNull(httpClient);
-        ArgumentNullException.ThrowIfNull(options);
-        ArgumentNullException.ThrowIfNull(options.Endpoint);
-        ArgumentException.ThrowIfNullOrWhiteSpace(options.ModelId);
+        ArgumentGuard.ThrowIfNull(httpClient, nameof(httpClient));
+        ArgumentGuard.ThrowIfNull(options, nameof(options));
+        ArgumentGuard.ThrowIfNull(options.Endpoint, nameof(options.Endpoint));
+        ArgumentGuard.ThrowIfNullOrWhiteSpace(options.ModelId, nameof(options.ModelId));
 
         _httpClient = httpClient;
         _disposeHttpClient = disposeHttpClient;
@@ -64,10 +65,13 @@ public class OpenAICompatibleChatClient : IChatClient
         _responseParser = new OpenAICompatibleResponseParser(_serializerOptions);
     }
 
-    private static HttpClient CreateHttpClient(HttpMessageHandler httpMessageHandler, bool disposeHandler)
+    private static HttpClient CreateHttpClient(HttpMessageHandler httpMessageHandler, bool disposeHandler,TimeSpan? timeout=null)
     {
-        ArgumentNullException.ThrowIfNull(httpMessageHandler);
-        return new HttpClient(httpMessageHandler, disposeHandler: disposeHandler);
+        
+        ArgumentGuard.ThrowIfNull(httpMessageHandler, nameof(httpMessageHandler));
+        var httpClient= new HttpClient(httpMessageHandler, disposeHandler: disposeHandler);
+        httpClient.Timeout = timeout?? httpClient.Timeout;
+        return httpClient;
     }
 
     public void Dispose()
@@ -89,7 +93,7 @@ public class OpenAICompatibleChatClient : IChatClient
         ChatOptions? options = null,
         CancellationToken cancellationToken = default)
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentGuard.ThrowIfDisposed(_disposed, this);
 
         var preparedMessages = PrepareMessages(messages, options);
         using var request = _requestBuilder.CreateRequestMessage(
@@ -111,7 +115,7 @@ public class OpenAICompatibleChatClient : IChatClient
         ChatOptions? options = null,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentGuard.ThrowIfDisposed(_disposed, this);
 
         var preparedMessages = PrepareMessages(messages, options);
         using var request = _requestBuilder.CreateRequestMessage(
@@ -129,7 +133,7 @@ public class OpenAICompatibleChatClient : IChatClient
         await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
 
         var streamState = _responseParser.CreateStreamingState();
-        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+        await using var stream = await response.Content.ReadAsStreamAsyncCompat(cancellationToken).ConfigureAwait(false);
         using var reader = new StreamReader(stream);
         var eventLines = new List<string>();
 
@@ -137,7 +141,7 @@ public class OpenAICompatibleChatClient : IChatClient
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            var line = await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false);
+            var line = await reader.ReadLineAsyncCompat(cancellationToken).ConfigureAwait(false);
             if (line is null)
             {
                 break;
@@ -170,7 +174,7 @@ public class OpenAICompatibleChatClient : IChatClient
 
     public object? GetService(Type serviceType, object? serviceKey = null)
     {
-        ArgumentNullException.ThrowIfNull(serviceType);
+        ArgumentGuard.ThrowIfNull(serviceType, nameof(serviceType));
 
         if (serviceType != typeof(object) && serviceType.IsAssignableFrom(GetType()))
         {
@@ -197,7 +201,7 @@ public class OpenAICompatibleChatClient : IChatClient
 
     protected virtual IReadOnlyList<ChatMessage> PrepareMessages(IEnumerable<ChatMessage> messages, ChatOptions? options)
     {
-        ArgumentNullException.ThrowIfNull(messages);
+        ArgumentGuard.ThrowIfNull(messages, nameof(messages));
 
         var list = messages.ToList();
         if (!string.IsNullOrWhiteSpace(options?.Instructions))
@@ -231,7 +235,7 @@ public class OpenAICompatibleChatClient : IChatClient
             return;
         }
 
-        var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+        var body = await response.Content.ReadAsStringAsyncCompat(cancellationToken).ConfigureAwait(false);
         throw new HttpRequestException(
             $"请求失败，状态码 {(int)response.StatusCode} ({response.ReasonPhrase})。响应内容: {body}");
     }
@@ -239,6 +243,6 @@ public class OpenAICompatibleChatClient : IChatClient
     private static async Task<string> ReadSuccessfulResponseAsync(HttpResponseMessage response, CancellationToken cancellationToken)
     {
         await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
-        return await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+        return await response.Content.ReadAsStringAsyncCompat(cancellationToken).ConfigureAwait(false);
     }
 }
