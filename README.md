@@ -1,13 +1,15 @@
 # ExpandOpenAI
 
-`ExpandOpenAI` 是一个面向 OpenAI Compatible 接口的轻量级 `IChatClient` 实现，基于 `Microsoft.Extensions.AI` 构建，适合接入 OpenAI、阿里云 DashScope 兼容模式，以及其他遵循 `/chat/completions` 协议的模型服务。
+`ExpandOpenAI` 是一个面向 OpenAI Compatible 接口的轻量级 `IChatClient` 与 `IEmbeddingGenerator<string, Embedding<float>>` 实现，基于 `Microsoft.Extensions.AI` 构建，适合接入 OpenAI、阿里云 DashScope 兼容模式，以及其他遵循 `/chat/completions`、`/embeddings` 协议的模型服务。
 
-它的目标不是重新发明一套 SDK，而是把“兼容 OpenAI 的 HTTP 接口”包装成标准的 `IChatClient`，方便你继续使用 `ChatMessage`、`ChatOptions`、流式输出、工具调用和多模态内容。
+它的目标不是重新发明一套 SDK，而是把“兼容 OpenAI 的 HTTP 接口”包装成标准的 `IChatClient` 和 `IEmbeddingGenerator`，方便你继续使用 `ChatMessage`、`ChatOptions`、流式输出、工具调用、多模态内容和向量生成。
 
 ## 特性
 
 - 实现 `Microsoft.Extensions.AI.IChatClient`
+- 实现 `Microsoft.Extensions.AI.IEmbeddingGenerator<string, Embedding<float>>`
 - 支持普通响应和流式响应
+- 支持 OpenAI Compatible embeddings 请求
 - 支持 `ChatOptions` 常见参数映射
 - 支持工具声明、工具调用和工具结果消息
 - 支持 `reasoning` / `reasoning_content` 解析为 `TextReasoningContent`
@@ -144,6 +146,63 @@ $env:OPENAI_API_KEY="<your-api-key>"
 using ExpandOpenAI;
 
 var client = new OpenAICompatibleChatClient();
+```
+
+## 向量模型
+
+`OpenAICompatibleEmbeddingGenerator` 实现了 `IEmbeddingGenerator<string, Embedding<float>>`，可以直接用于 `Microsoft.Extensions.VectorData`、Qdrant、Semantic Kernel Vector Store 等依赖 `Microsoft.Extensions.AI` embedding 抽象的场景。
+
+```csharp
+using ExpandOpenAI;
+using Microsoft.Extensions.AI;
+
+IEmbeddingGenerator<string, Embedding<float>> generator =
+    new OpenAICompatibleEmbeddingGenerator(new OpenAICompatibleEmbeddingGeneratorOptions
+    {
+        Endpoint = new Uri("https://dashscope.aliyuncs.com/compatible-mode/v1"),
+        ApiKey = "<your-api-key>",
+        ModelId = "text-embedding-v4",
+    });
+
+var embedding = await generator.GenerateAsync("需要向量化的文本");
+Console.WriteLine(embedding.Vector.Length);
+```
+
+批量生成：
+
+```csharp
+var embeddings = await generator.GenerateAsync(
+[
+    "第一段文本",
+    "第二段文本",
+]);
+
+foreach (var item in embeddings)
+{
+    Console.WriteLine(item.Vector.Length);
+}
+```
+
+如果你的向量模型支持自定义维度，可以通过 `EmbeddingGenerationOptions.Dimensions` 传入：
+
+```csharp
+var embedding = await generator.GenerateAsync(
+    "需要向量化的文本",
+    new EmbeddingGenerationOptions
+    {
+        Dimensions = 1024,
+    });
+```
+
+向量模型也支持环境变量初始化：
+
+- `OPENAI_ENDPOINT`
+- `OPENAI_EMBEDDING_MODEL`
+- `OPENAI_API_KEY`
+- `OPENAI_EMBEDDING_REQUEST_PATH`：可选，默认值为 `embeddings`
+
+```csharp
+var generator = new OpenAICompatibleEmbeddingGenerator();
 ```
 
 ## 配置项说明
