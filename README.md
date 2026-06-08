@@ -194,6 +194,28 @@ var embedding = await generator.GenerateAsync(
     });
 ```
 
+也可以在生成器配置里设置默认维度；单次调用传入的 `EmbeddingGenerationOptions.Dimensions` 会覆盖默认值：
+
+```csharp
+var generator = new OpenAICompatibleEmbeddingGenerator(new OpenAICompatibleEmbeddingGeneratorOptions
+{
+    Endpoint = new Uri("https://dashscope.aliyuncs.com/compatible-mode/v1"),
+    ApiKey = "<your-api-key>",
+    ModelId = "text-embedding-v4",
+    DefaultModelDimensions = 1024,
+});
+```
+
+使用便捷构造函数时也可以传入默认维度：
+
+```csharp
+var generator = new OpenAICompatibleEmbeddingGenerator(
+    "text-embedding-v4",
+    "<your-api-key>",
+    new Uri("https://dashscope.aliyuncs.com/compatible-mode/v1"),
+    defaultModelDimensions: 1024);
+```
+
 向量模型也支持环境变量初始化：
 
 - `OPENAI_ENDPOINT`
@@ -217,6 +239,7 @@ var generator = new OpenAICompatibleEmbeddingGenerator();
 | `ApiKey` | API Key |
 | `ApiKeyHeaderName` | 认证头名称，默认 `Authorization` |
 | `ApiKeyScheme` | 认证方案，默认 `Bearer`，可设为 `null` 或空字符串 |
+| `DefaultModelDimensions` | 向量生成默认维度；单次调用的 `EmbeddingGenerationOptions.Dimensions` 优先 |
 | `Headers` | 额外请求头 |
 | `RequestBody` | 额外请求体字段 |
 | `SerializerOptions` | 自定义 JSON 序列化配置 |

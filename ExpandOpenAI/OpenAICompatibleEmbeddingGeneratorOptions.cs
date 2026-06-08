@@ -26,6 +26,8 @@ public class OpenAICompatibleEmbeddingGeneratorOptions
 
     public string? EncodingFormat { get; init; } = "float";
 
+    public int? DefaultModelDimensions { get; init; }
+
     public JsonSerializerOptions? SerializerOptions { get; init; }
 
     public IReadOnlyDictionary<string, string> Headers { get; init; } =

@@ -44,13 +44,19 @@ public class OpenAICompatibleEmbeddingGenerator : IEmbeddingGenerator<string, Em
     {
     }
 
-    public OpenAICompatibleEmbeddingGenerator(string modelId, string apiKey, Uri endpoint, string requestPath = "embeddings")
+    public OpenAICompatibleEmbeddingGenerator(
+        string modelId,
+        string apiKey,
+        Uri endpoint,
+        string requestPath = "embeddings",
+        int? defaultModelDimensions = null)
         : this(new OpenAICompatibleEmbeddingGeneratorOptions
         {
             ModelId = modelId,
             ApiKey = apiKey,
             Endpoint = endpoint,
             RequestPath = requestPath,
+            DefaultModelDimensions = defaultModelDimensions,
         })
     {
     }
