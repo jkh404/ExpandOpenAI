@@ -71,9 +71,10 @@ internal sealed class OpenAICompatibleEmbeddingRequestBuilder
             ["input"] = new JsonArray(values.Select(static value => JsonValue.Create(value)).ToArray()),
         };
 
-        if (options?.Dimensions is not null)
+        var dimensions = options?.Dimensions ?? _options.DefaultModelDimensions;
+        if (dimensions is not null)
         {
-            body["dimensions"] = JsonSerializer.SerializeToNode(options.Dimensions, _serializerOptions);
+            body["dimensions"] = JsonSerializer.SerializeToNode(dimensions, _serializerOptions);
         }
 
         if (!string.IsNullOrWhiteSpace(_options.EncodingFormat))
