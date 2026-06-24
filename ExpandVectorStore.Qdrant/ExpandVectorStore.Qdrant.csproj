@@ -1,0 +1,33 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+	  <TargetFrameworks>netstandard2.1;net10.0</TargetFrameworks>
+	  <LangVersion>14.0</LangVersion>
+	  <ImplicitUsings>enable</ImplicitUsings>
+	  <Nullable>enable</Nullable>
+	  <IsPackable>true</IsPackable>
+	  <GenerateDocumentationFile>true</GenerateDocumentationFile>
+	  <NoWarn>$(NoWarn);CS1591</NoWarn>
+	  <PackageId>ExpandVectorStore.Qdrant</PackageId>
+	  <Title>ExpandVectorStore.Qdrant</Title>
+	  <Authors>jkh404</Authors>
+	  <Description>Qdrant vector store provider for Microsoft.Extensions.VectorData with collection management, record mapping, payload serialization, and vector search support.</Description>
+	  <PackageTags>Qdrant;VectorStore;Microsoft.Extensions.VectorData;Microsoft.Extensions.AI;Embeddings;Vector;Search;RAG</PackageTags>
+	  <PackageReadmeFile>README.md</PackageReadmeFile>
+	  <PackageLicenseExpression>MIT</PackageLicenseExpression>
+	  <PackageProjectUrl>https://github.com/jkh404/ExpandOpenAI</PackageProjectUrl>
+	  <RepositoryUrl>https://github.com/jkh404/ExpandOpenAI</RepositoryUrl>
+	  <RepositoryType>git</RepositoryType>
+	  <PublishRepositoryUrl>true</PublishRepositoryUrl>
+  </PropertyGroup>
+
+	<ItemGroup>
+		<PackageReference Include="Microsoft.Extensions.AI.OpenAI" Version="10.7.0" />
+		<PackageReference Include="Microsoft.Extensions.VectorData.Abstractions" Version="10.1.0" />
+		<PackageReference Include="Qdrant.Client" Version="1.18.1" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<None Include="README.md" Pack="true" PackagePath="\" />
+	</ItemGroup>
+</Project>
