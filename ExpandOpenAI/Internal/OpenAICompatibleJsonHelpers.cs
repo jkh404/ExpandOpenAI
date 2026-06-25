@@ -40,15 +40,17 @@ internal static class OpenAICompatibleJsonHelpers
             return null;
         }
 
-        return property.ValueKind switch
+        var result= property.ValueKind switch
         {
             JsonValueKind.Null => null,
             JsonValueKind.String => property.GetString(),
             JsonValueKind.Number => property.ToString(),
             JsonValueKind.True => bool.TrueString,
             JsonValueKind.False => bool.FalseString,
-            _ => property.ToString(),
+            _ => property.GetString(),
         };
+
+        return result;
     }
 
     public static int? GetInt32(JsonElement element, string propertyName)

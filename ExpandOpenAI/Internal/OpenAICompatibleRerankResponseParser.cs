@@ -6,7 +6,7 @@ namespace ExpandOpenAI.Internal;
 
 internal sealed class OpenAICompatibleRerankResponseParser
 {
-    public RerankingResponse ParseResponse(JsonElement root)
+    public RerankingResponse ParseResponse(JsonElement root, IReadOnlyList<string>? sourceDocuments = null)
     {
         var resultsElement = GetResultsElement(root);
         var results = new List<RerankingResult>();
@@ -16,9 +16,10 @@ internal sealed class OpenAICompatibleRerankResponseParser
         {
             var index = OpenAICompatibleJsonHelpers.GetInt32(item, "index") ?? position;
             var relevanceScore = GetRequiredDouble(item, "relevance_score", "score");
+            var parsedDocument = ParseDocument(item) ?? GetDocumentFromSource(sourceDocuments, index);
             results.Add(new RerankingResult(index, relevanceScore)
             {
-                Document = ParseDocument(item),
+                Document = parsedDocument,
                 AdditionalProperties = OpenAICompatibleJsonHelpers.CollectAdditionalProperties(
                     item,
                     "document",
@@ -54,6 +55,19 @@ internal sealed class OpenAICompatibleRerankResponseParser
         }
 
         throw new JsonException("Rerank response does not contain a results array.");
+    }
+
+    private static RerankingDocument? GetDocumentFromSource(IReadOnlyList<string>? sourceDocuments, int index)
+    {
+        if (sourceDocuments is null || index < 0 || index >= sourceDocuments.Count)
+        {
+            return null;
+        }
+
+        return new RerankingDocument
+        {
+            Text = sourceDocuments[index],
+        };
     }
 
     private static RerankingDocument? ParseDocument(JsonElement item)

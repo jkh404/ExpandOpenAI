@@ -126,7 +126,7 @@ public class OpenAICompatibleReranker : IDisposable
         var payload = await ReadSuccessfulResponseAsync(response, cancellationToken).ConfigureAwait(false);
 
         using var document = JsonDocument.Parse(payload);
-        return _responseParser.ParseResponse(document.RootElement);
+        return _responseParser.ParseResponse(document.RootElement, preparedDocuments);
     }
 
     public object? GetService(Type serviceType, object? serviceKey = null)

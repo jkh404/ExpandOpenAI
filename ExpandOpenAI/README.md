@@ -230,7 +230,7 @@ var generator = new OpenAICompatibleEmbeddingGenerator();
 
 ## 重排序模型
 
-`OpenAICompatibleReranker` 面向 OpenAI Compatible `/reranks` 接口，默认请求体为 `model`、`query`、`documents`，可选 `top_n` 和 `instruct`。返回结果会解析 `results[].index`、`results[].relevance_score`、可选 `results[].document.text` 和 `usage.total_tokens`。
+`OpenAICompatibleReranker` 面向 OpenAI Compatible `/reranks` 接口，默认请求体为 `model`、`query`、`documents`，可选 `top_n` 和 `instruct`。返回结果会解析 `results[].index`、`results[].relevance_score`、可选 `results[].document.text` 和 `usage.total_tokens`。如果服务未返回 `results[].document`，库会按 `results[].index` 回填请求中的原始 document 文本。
 
 ```csharp
 using ExpandOpenAI;
