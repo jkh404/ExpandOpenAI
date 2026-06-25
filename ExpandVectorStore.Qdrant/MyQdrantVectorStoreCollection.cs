@@ -327,13 +327,6 @@ internal sealed class MyQdrantVectorStoreCollection<TKey, TRecord> : VectorStore
 
     private static void ValidateSearchOptions(VectorSearchOptions<TRecord> options)
     {
-#pragma warning disable CS0618
-        if (options.OldFilter is not null)
-#pragma warning restore CS0618
-        {
-            throw new NotSupportedException("MyQdrantVectorStoreCollection does not translate old vector filters yet.");
-        }
-
         if (options.Filter is not null)
         {
             throw new NotSupportedException("MyQdrantVectorStoreCollection does not translate vector search filters yet.");
