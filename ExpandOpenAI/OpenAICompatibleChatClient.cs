@@ -133,7 +133,7 @@ public class OpenAICompatibleChatClient : IChatClient
         await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
 
         var streamState = _responseParser.CreateStreamingState();
-        await using var stream = await response.Content.ReadAsStreamAsyncCompat(cancellationToken).ConfigureAwait(false);
+        using var stream = await response.Content.ReadAsStreamAsyncCompat(cancellationToken).ConfigureAwait(false);
         using var reader = new StreamReader(stream);
         var eventLines = new List<string>();
 

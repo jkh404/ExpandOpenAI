@@ -21,7 +21,7 @@ internal static class OpenAICompatibleJsonHelpers
                     builder.Append('\n');
                 }
 
-                builder.Append(line[5..].TrimStart());
+                builder.Append(line.Substring(5).TrimStart());
             }
         }
 

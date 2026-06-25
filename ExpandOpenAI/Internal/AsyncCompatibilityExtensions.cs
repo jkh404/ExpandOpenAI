@@ -4,7 +4,7 @@ internal static class AsyncCompatibilityExtensions
 {
     public static Task<string> ReadAsStringAsyncCompat(this HttpContent content, CancellationToken cancellationToken)
     {
-#if NETSTANDARD2_1
+#if NETSTANDARD2_0 || NETSTANDARD2_1
         return content.ReadAsStringAsync().WithCancellation(cancellationToken);
 #else
         return content.ReadAsStringAsync(cancellationToken);
@@ -13,7 +13,7 @@ internal static class AsyncCompatibilityExtensions
 
     public static Task<Stream> ReadAsStreamAsyncCompat(this HttpContent content, CancellationToken cancellationToken)
     {
-#if NETSTANDARD2_1
+#if NETSTANDARD2_0 || NETSTANDARD2_1
         return content.ReadAsStreamAsync().WithCancellation(cancellationToken);
 #else
         return content.ReadAsStreamAsync(cancellationToken);
@@ -22,7 +22,7 @@ internal static class AsyncCompatibilityExtensions
 
     public static ValueTask<string?> ReadLineAsyncCompat(this StreamReader reader, CancellationToken cancellationToken)
     {
-#if NETSTANDARD2_1
+#if NETSTANDARD2_0 || NETSTANDARD2_1
         return new ValueTask<string?>(reader.ReadLineAsync().WithCancellation(cancellationToken));
 #else
         return reader.ReadLineAsync(cancellationToken);

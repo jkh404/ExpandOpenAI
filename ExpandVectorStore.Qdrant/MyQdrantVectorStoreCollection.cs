@@ -31,12 +31,7 @@ internal sealed class MyQdrantVectorStoreCollection<TKey, TRecord> : VectorStore
         _qdrantClient = qdrantClient;
         Name = name;
         _mapper = MyQdrantRecordMapper<TKey, TRecord>.Create(definition);
-        _metadata = new VectorStoreCollectionMetadata
-        {
-            VectorStoreSystemName = storeMetadata.VectorStoreSystemName,
-            VectorStoreName = storeMetadata.VectorStoreName,
-            CollectionName = name
-        };
+        _metadata = MyQdrantVectorStoreMetadata.CreateCollectionMetadata(storeMetadata, name);
     }
 
     public override string Name { get; }
@@ -296,15 +291,11 @@ internal sealed class MyQdrantVectorStoreCollection<TKey, TRecord> : VectorStore
 
     private VectorStoreException CreateVectorStoreException(string operationName, Exception innerException)
     {
-        return new VectorStoreException(
+        return MyQdrantVectorStoreMetadata.CreateCollectionException(
             $"Qdrant collection operation '{operationName}' failed for collection '{Name}'.",
-            innerException)
-        {
-            VectorStoreSystemName = _metadata.VectorStoreSystemName,
-            VectorStoreName = _metadata.VectorStoreName,
-            CollectionName = Name,
-            OperationName = operationName
-        };
+            innerException,
+            _metadata,
+            operationName);
     }
 
     private void ThrowIfDisposed()
@@ -604,7 +595,7 @@ internal sealed class MyQdrantRecordMapper<TKey, TRecord>
 
     private static string GetStorageName(string name, string? storageName)
     {
-        return string.IsNullOrWhiteSpace(storageName) ? name : storageName;
+        return string.IsNullOrWhiteSpace(storageName) ? name : storageName!;
     }
 
     private static PointId ToPointIdValue(object? key)

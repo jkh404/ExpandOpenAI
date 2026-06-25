@@ -410,7 +410,7 @@ internal sealed class OpenAICompatibleRequestBuilder
 
     private static string? GetAudioFormat(string mediaType)
     {
-        var subtype = mediaType[(mediaType.IndexOf('/') + 1)..].Trim().ToLowerInvariant();
+        var subtype = mediaType.Substring(mediaType.IndexOf('/') + 1).Trim().ToLowerInvariant();
         return subtype switch
         {
             "mpeg" => "mp3",

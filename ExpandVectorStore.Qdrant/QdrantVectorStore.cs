@@ -5,11 +5,7 @@ public sealed class QdrantVectorStore : VectorStore
 {
     private readonly QdrantClient _qdrantClient;
     private readonly bool _ownsClient;
-    private readonly VectorStoreMetadata _metadata = new()
-    {
-        VectorStoreSystemName = "qdrant",
-        VectorStoreName = "qdrant"
-    };
+    private readonly VectorStoreMetadata _metadata = MyQdrantVectorStoreMetadata.CreateStoreMetadata();
     private bool _disposed;
 
     public QdrantVectorStore(QdrantClient qdrantClient, bool ownsClient = false)
@@ -174,12 +170,11 @@ public sealed class QdrantVectorStore : VectorStore
 
     private VectorStoreException CreateVectorStoreException(string operationName, Exception innerException)
     {
-        return new VectorStoreException($"Qdrant vector store operation '{operationName}' failed.", innerException)
-        {
-            VectorStoreSystemName = _metadata.VectorStoreSystemName,
-            VectorStoreName = _metadata.VectorStoreName,
-            OperationName = operationName
-        };
+        return MyQdrantVectorStoreMetadata.CreateStoreException(
+            $"Qdrant vector store operation '{operationName}' failed.",
+            innerException,
+            _metadata,
+            operationName);
     }
 
     private void ThrowIfDisposed()

@@ -1,4 +1,4 @@
-#if NETSTANDARD2_1
+#if NETSTANDARD2_0 || NETSTANDARD2_1
 namespace System.Runtime.CompilerServices;
 
 [AttributeUsage(AttributeTargets.All, Inherited = false)]
@@ -16,6 +16,11 @@ internal sealed class CompilerFeatureRequiredAttribute : Attribute
 
 [AttributeUsage(AttributeTargets.Class | AttributeTargets.Struct | AttributeTargets.Field | AttributeTargets.Property, Inherited = false)]
 internal sealed class RequiredMemberAttribute : Attribute
+{
+}
+
+[AttributeUsage(AttributeTargets.Constructor, AllowMultiple = false, Inherited = false)]
+internal sealed class SetsRequiredMembersAttribute : Attribute
 {
 }
 
