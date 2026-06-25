@@ -8,6 +8,7 @@ This package lets you use Qdrant through the standard `VectorStore` and `VectorS
 
 - Create, delete, list, and open Qdrant collections.
 - Upsert, retrieve, delete, scroll, and vector search records.
+- Translate common LINQ filters to Qdrant filters for scroll and vector search.
 - Map records from `VectorStoreKey`, `VectorStoreData`, and `VectorStoreVector` attributes.
 - Use dynamic dictionary records with `VectorStoreCollectionDefinition`.
 - Serialize common payload values, including strings, numbers, booleans, `Guid`, `DateTime`, `DateTimeOffset`, `DateOnly`, arrays, and lists.
@@ -43,10 +44,18 @@ await foreach (var result in collection.SearchAsync(queryEmbedding.Vector, top: 
     Console.WriteLine($"{result.Record.Name}: {result.Score}");
 }
 
+string[] ids = ["1", "2", "3"];
+Product[] selected = await collection
+    .GetAsync(product => ids.Contains(product.DataId), top: 100)
+    .ToArrayAsync();
+
 public sealed class Product
 {
     [VectorStoreKey]
     public ulong Id { get; set; }
+
+    [VectorStoreData]
+    public string DataId { get; set; } = string.Empty;
 
     [VectorStoreData]
     public string Name { get; set; } = string.Empty;
@@ -58,6 +67,19 @@ public sealed class Product
     public ReadOnlyMemory<float> Vector { get; set; }
 }
 ```
+
+## LINQ filters
+
+The provider translates common expressions into Qdrant filters:
+
+- Boolean logic: `&&`, `||`, and `!`.
+- Comparisons: `==`, `!=`, `>`, `>=`, `<`, and `<=`.
+- Batch membership: `ids.Contains(record.DataId)`.
+- Point id membership when the filtered property is `[VectorStoreKey]`.
+- Text matching: `record.Description.Contains("notebook")`.
+- Null checks: `record.OptionalValue == null` and `record.OptionalValue != null`.
+
+The same filter translation is used by `GetAsync(filter, top, ...)` and `SearchAsync(vector, top, new VectorSearchOptions<TRecord> { Filter = ... })`.
 
 ## Connection options
 
@@ -84,5 +106,6 @@ var store = new QdrantVectorStore(
 ## Current limitations
 
 - One unnamed vector property per record is supported.
-- LINQ filter translation and vector search filter translation are not implemented yet.
+- `OrderBy` expression translation is not implemented yet.
+- Filters cannot be applied to vector properties.
 - Qdrant point keys support `Guid`, GUID strings, and non-negative integer key types.

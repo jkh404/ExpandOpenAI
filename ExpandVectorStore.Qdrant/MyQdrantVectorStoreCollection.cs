@@ -158,24 +158,18 @@ internal sealed class MyQdrantVectorStoreCollection<TKey, TRecord> : VectorStore
         MyQdrantGuard.ThrowIfNull(filter, nameof(filter));
         ValidateTop(top);
 
-        if (!IsConstantTrueFilter(filter))
-        {
-            throw new NotSupportedException(
-                "MyQdrantVectorStoreCollection does not translate LINQ expression filters yet. " +
-                "Use key lookup or vector search for this collection.");
-        }
-
         options ??= new FilteredRecordRetrievalOptions<TRecord>();
         if (options.OrderBy is not null)
         {
             throw new NotSupportedException("MyQdrantVectorStoreCollection does not translate OrderBy expressions yet.");
         }
 
+        Filter? qdrantFilter = _mapper.CreateFilter(filter);
         ScrollResponse response = await RunOperationAsync(
             "Scroll",
             () => _qdrantClient.ScrollAsync(
                 Name,
-                filter: null,
+                filter: qdrantFilter,
                 limit: checked((uint)(top + options.Skip)),
                 offset: null,
                 payloadSelector: new WithPayloadSelector { Enable = true },
@@ -200,11 +194,13 @@ internal sealed class MyQdrantVectorStoreCollection<TKey, TRecord> : VectorStore
         ValidateSearchOptions(options);
 
         ReadOnlyMemory<float> vector = MyQdrantVectorValueReader.ReadSearchVector(searchValue);
+        Filter? qdrantFilter = options.Filter is null ? null : _mapper.CreateFilter(options.Filter);
         IReadOnlyList<ScoredPoint> points = await RunOperationAsync(
             "Search",
             () => _qdrantClient.SearchAsync(
                 Name,
                 vector,
+                filter: qdrantFilter,
                 limit: checked((ulong)top),
                 offset: checked((ulong)options.Skip),
                 payloadSelector: new WithPayloadSelector { Enable = true },
@@ -311,18 +307,8 @@ internal sealed class MyQdrantVectorStoreCollection<TKey, TRecord> : VectorStore
         }
     }
 
-    private static bool IsConstantTrueFilter(Expression<Func<TRecord, bool>> filter)
-    {
-        return filter.Body is ConstantExpression { Value: true };
-    }
-
     private static void ValidateSearchOptions(VectorSearchOptions<TRecord> options)
     {
-        if (options.Filter is not null)
-        {
-            throw new NotSupportedException("MyQdrantVectorStoreCollection does not translate vector search filters yet.");
-        }
-
         if (options.VectorProperty is not null)
         {
             throw new NotSupportedException(
@@ -372,6 +358,11 @@ internal sealed class MyQdrantRecordMapper<TKey, TRecord>
     public PointId ToPointId(TKey key)
     {
         return ToPointIdValue(key);
+    }
+
+    public Filter? CreateFilter(Expression<Func<TRecord, bool>> filter)
+    {
+        return new MyQdrantFilterTranslator<TRecord>(_key, _dataMembers, _vector).Translate(filter);
     }
 
     public PointStruct MapToPointStruct(TRecord record)
@@ -609,8 +600,9 @@ internal sealed class MyQdrantRecordMapper<TKey, TRecord>
             int and >= 0 => new PointId { Num = Convert.ToUInt64(key, CultureInfo.InvariantCulture) },
             long and >= 0 => new PointId { Num = Convert.ToUInt64(key, CultureInfo.InvariantCulture) },
             string value when Guid.TryParse(value, out Guid guid) => new PointId { Uuid = guid.ToString("D") },
+            string value when ulong.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out ulong number) => new PointId { Num = number },
             _ => throw new NotSupportedException(
-                $"Qdrant point ids support Guid or non-negative integer keys. Key type '{key.GetType().Name}' is not supported.")
+                $"Qdrant point ids support Guid, Guid string, non-negative integer, or non-negative integer string keys. Key value '{key}' of type '{key.GetType().Name}' is not supported.")
         };
     }
 
