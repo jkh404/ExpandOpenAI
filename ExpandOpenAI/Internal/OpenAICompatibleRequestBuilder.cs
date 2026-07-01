@@ -24,7 +24,8 @@ internal sealed class OpenAICompatibleRequestBuilder
         Action<JsonObject, IReadOnlyList<ChatMessage>, ChatOptions?, bool>? configureRequestBody,
         Action<HttpRequestMessage, IReadOnlyList<ChatMessage>, ChatOptions?, bool>? configureRequest)
     {
-        var requestUri = BuildRequestUri();
+        var compatibleOptions = options as OpenAICompatibleChatClientOptions ?? _options;
+        var requestUri = BuildRequestUri(compatibleOptions);
         var body = CreateRequestBody(messages, options, stream, configureRequestBody);
         var request = new HttpRequestMessage(HttpMethod.Post, requestUri)
         {
@@ -37,33 +38,33 @@ internal sealed class OpenAICompatibleRequestBuilder
             request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
         }
 
-        AddAuthenticationHeader(request);
-        AddDefaultHeaders(request);
+        AddAuthenticationHeader(request, compatibleOptions);
+        AddDefaultHeaders(request, compatibleOptions);
 
-        _options.ConfigureRequest?.Invoke(request, messages, options, stream);
+        compatibleOptions.ConfigureRequest?.Invoke(request, messages, options, stream);
         configureRequest?.Invoke(request, messages, options, stream);
         return request;
     }
 
-    private Uri BuildRequestUri()
+    private static Uri BuildRequestUri(OpenAICompatibleChatClientOptions options)
     {
-        if (string.IsNullOrWhiteSpace(_options.RequestPath))
+        if (string.IsNullOrWhiteSpace(options.RequestPath))
         {
-            return _options.Endpoint;
+            return options.Endpoint;
         }
 
-        if (Uri.TryCreate(_options.RequestPath, UriKind.Absolute, out var absoluteUri))
+        if (Uri.TryCreate(options.RequestPath, UriKind.Absolute, out var absoluteUri))
         {
             return absoluteUri;
         }
 
-        var baseUri = _options.Endpoint;
+        var baseUri = options.Endpoint;
         if (!baseUri.AbsoluteUri.EndsWith("/", StringComparison.Ordinal))
         {
             baseUri = new Uri($"{baseUri.AbsoluteUri}/", UriKind.Absolute);
         }
 
-        return new Uri(baseUri, _options.RequestPath);
+        return new Uri(baseUri, options.RequestPath);
     }
 
     private JsonObject CreateRequestBody(
@@ -72,9 +73,10 @@ internal sealed class OpenAICompatibleRequestBuilder
         bool stream,
         Action<JsonObject, IReadOnlyList<ChatMessage>, ChatOptions?, bool>? configureRequestBody)
     {
+        var compatibleOptions = options as OpenAICompatibleChatClientOptions ?? _options;
         var body = new JsonObject
         {
-            ["model"] = options?.ModelId ?? _options.ModelId,
+            ["model"] = options?.ModelId ?? compatibleOptions.ModelId,
             ["messages"] = new JsonArray(messages.Select(SerializeMessage).ToArray()),
             ["stream"] = stream,
         };
@@ -144,10 +146,10 @@ internal sealed class OpenAICompatibleRequestBuilder
             body["parallel_tool_calls"] = options.AllowMultipleToolCalls.Value;
         }
 
-        MergeRequestProperties(body, _options.RequestBody);
+        MergeRequestProperties(body, compatibleOptions.RequestBody);
         MergeRequestProperties(body, options?.AdditionalProperties);
 
-        _options.ConfigureRequestBody?.Invoke(body, messages, options, stream);
+        compatibleOptions.ConfigureRequestBody?.Invoke(body, messages, options, stream);
         configureRequestBody?.Invoke(body, messages, options, stream);
 
         return body;
@@ -353,25 +355,25 @@ internal sealed class OpenAICompatibleRequestBuilder
         };
     }
 
-    private void AddAuthenticationHeader(HttpRequestMessage request)
+    private static void AddAuthenticationHeader(HttpRequestMessage request, OpenAICompatibleChatClientOptions options)
     {
-        if (string.IsNullOrWhiteSpace(_options.ApiKey))
+        if (string.IsNullOrWhiteSpace(options.ApiKey))
         {
             return;
         }
 
-        var headerName = _options.ApiKeyHeaderName;
-        var value = string.IsNullOrWhiteSpace(_options.ApiKeyScheme)
-            ? _options.ApiKey
-            : $"{_options.ApiKeyScheme} {_options.ApiKey}";
+        var headerName = options.ApiKeyHeaderName;
+        var value = string.IsNullOrWhiteSpace(options.ApiKeyScheme)
+            ? options.ApiKey
+            : $"{options.ApiKeyScheme} {options.ApiKey}";
 
         request.Headers.Remove(headerName);
         request.Headers.TryAddWithoutValidation(headerName, value);
     }
 
-    private void AddDefaultHeaders(HttpRequestMessage request)
+    private static void AddDefaultHeaders(HttpRequestMessage request, OpenAICompatibleChatClientOptions options)
     {
-        foreach (var pair in _options.Headers)
+        foreach (var pair in options.Headers)
         {
             request.Headers.Remove(pair.Key);
             request.Headers.TryAddWithoutValidation(pair.Key, pair.Value);

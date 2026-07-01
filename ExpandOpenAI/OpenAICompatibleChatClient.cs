@@ -95,10 +95,11 @@ public class OpenAICompatibleChatClient : IChatClient
     {
         ArgumentGuard.ThrowIfDisposed(_disposed, this);
 
-        var preparedMessages = PrepareMessages(messages, options);
+        var effectiveOptions = CreateEffectiveOptions(options);
+        var preparedMessages = PrepareMessages(messages, effectiveOptions);
         using var request = _requestBuilder.CreateRequestMessage(
             preparedMessages,
-            options,
+            effectiveOptions,
             stream: false,
             ConfigureRequestBody,
             ConfigureRequest);
@@ -117,10 +118,11 @@ public class OpenAICompatibleChatClient : IChatClient
     {
         ArgumentGuard.ThrowIfDisposed(_disposed, this);
 
-        var preparedMessages = PrepareMessages(messages, options);
+        var effectiveOptions = CreateEffectiveOptions(options);
+        var preparedMessages = PrepareMessages(messages, effectiveOptions);
         using var request = _requestBuilder.CreateRequestMessage(
             preparedMessages,
-            options,
+            effectiveOptions,
             stream: true,
             ConfigureRequestBody,
             ConfigureRequest);
@@ -212,6 +214,24 @@ public class OpenAICompatibleChatClient : IChatClient
         return list;
     }
 
+    protected virtual OpenAICompatibleChatClientOptions CreateEffectiveOptions(ChatOptions? options)
+    {
+        if (options is null || ReferenceEquals(options, _options))
+        {
+            return _options;
+        }
+
+        var merged = (OpenAICompatibleChatClientOptions)_options.Clone();
+        ApplyChatOptionsOverrides(merged, options);
+
+        if (options is OpenAICompatibleChatClientOptions compatibleOptions)
+        {
+            ApplyExtendedOptionsOverrides(merged, compatibleOptions);
+        }
+
+        return merged;
+    }
+
     protected virtual void ConfigureRequestBody(
         System.Text.Json.Nodes.JsonObject body,
         IReadOnlyList<ChatMessage> messages,
@@ -244,5 +264,161 @@ public class OpenAICompatibleChatClient : IChatClient
     {
         await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
         return await response.Content.ReadAsStringAsyncCompat(cancellationToken).ConfigureAwait(false);
+    }
+
+    private static void ApplyChatOptionsOverrides(OpenAICompatibleChatClientOptions target, ChatOptions source)
+    {
+        if (source.ConversationId is not null)
+        {
+            target.ConversationId = source.ConversationId;
+        }
+
+        if (source.Instructions is not null)
+        {
+            target.Instructions = source.Instructions;
+        }
+
+        if (source.Temperature is not null)
+        {
+            target.Temperature = source.Temperature;
+        }
+
+        if (source.MaxOutputTokens is not null)
+        {
+            target.MaxOutputTokens = source.MaxOutputTokens;
+        }
+
+        if (source.TopP is not null)
+        {
+            target.TopP = source.TopP;
+        }
+
+        if (source.TopK is not null)
+        {
+            target.TopK = source.TopK;
+        }
+
+        if (source.FrequencyPenalty is not null)
+        {
+            target.FrequencyPenalty = source.FrequencyPenalty;
+        }
+
+        if (source.PresencePenalty is not null)
+        {
+            target.PresencePenalty = source.PresencePenalty;
+        }
+
+        if (source.Seed is not null)
+        {
+            target.Seed = source.Seed;
+        }
+
+        if (source.ResponseFormat is not null)
+        {
+            target.ResponseFormat = source.ResponseFormat;
+        }
+
+        if (source.ModelId is not null)
+        {
+            target.ModelId = source.ModelId;
+        }
+
+        if (source.StopSequences is not null)
+        {
+            target.StopSequences = source.StopSequences;
+        }
+
+        if (source.AllowMultipleToolCalls is not null)
+        {
+            target.AllowMultipleToolCalls = source.AllowMultipleToolCalls;
+        }
+
+        if (source.ToolMode is not null)
+        {
+            target.ToolMode = source.ToolMode;
+        }
+
+        if (source.Tools is not null)
+        {
+            target.Tools = source.Tools;
+        }
+
+        if (source.AllowBackgroundResponses is not null)
+        {
+            target.AllowBackgroundResponses = source.AllowBackgroundResponses;
+        }
+
+        if (source.ContinuationToken is not null)
+        {
+            target.ContinuationToken = source.ContinuationToken;
+        }
+
+        if (source.RawRepresentationFactory is not null)
+        {
+            target.RawRepresentationFactory = source.RawRepresentationFactory;
+        }
+
+        if (source.AdditionalProperties is not null)
+        {
+            var additionalProperties = target.AdditionalProperties is null
+                ? new AdditionalPropertiesDictionary()
+                : new AdditionalPropertiesDictionary(target.AdditionalProperties);
+
+            foreach (var pair in source.AdditionalProperties)
+            {
+                additionalProperties[pair.Key] = pair.Value;
+            }
+
+            target.AdditionalProperties = additionalProperties;
+        }
+    }
+
+    private static void ApplyExtendedOptionsOverrides(
+        OpenAICompatibleChatClientOptions target,
+        OpenAICompatibleChatClientOptions source)
+    {
+        if (source.ApiKey is not null)
+        {
+            target.ApiKey = source.ApiKey;
+        }
+
+        if (source.Headers.Count > 0)
+        {
+            var headers = target.Headers.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase);
+            foreach (var pair in source.Headers)
+            {
+                headers[pair.Key] = pair.Value;
+            }
+
+            target.Headers = headers;
+        }
+
+        if (source.RequestBody is not null)
+        {
+            var requestBody = target.RequestBody is null
+                ? new Dictionary<string, object?>()
+                : target.RequestBody.ToDictionary(pair => pair.Key, pair => pair.Value);
+
+            foreach (var pair in source.RequestBody)
+            {
+                requestBody[pair.Key] = pair.Value;
+            }
+
+            target.RequestBody = requestBody;
+        }
+
+        if (!ReferenceEquals(target.ConfigureRequest, source.ConfigureRequest) && source.ConfigureRequest is not null)
+        {
+            target.ConfigureRequest = target.ConfigureRequest is null
+                ? source.ConfigureRequest
+                : target.ConfigureRequest + source.ConfigureRequest;
+        }
+
+        if (!ReferenceEquals(target.ConfigureRequestBody, source.ConfigureRequestBody) && source.ConfigureRequestBody is not null)
+        {
+            target.ConfigureRequestBody = target.ConfigureRequestBody is null
+                ? source.ConfigureRequestBody
+                : target.ConfigureRequestBody + source.ConfigureRequestBody;
+        }
     }
 }
