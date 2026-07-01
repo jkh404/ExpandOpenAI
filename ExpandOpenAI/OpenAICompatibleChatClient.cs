@@ -205,7 +205,7 @@ public class OpenAICompatibleChatClient : IChatClient
     {
         ArgumentGuard.ThrowIfNull(messages, nameof(messages));
 
-        var list = messages.ToList();
+        var list = NormalizeMessages(messages).ToList();
         if (!string.IsNullOrWhiteSpace(options?.Instructions))
         {
             list.Insert(0, new ChatMessage(ChatRole.System, options.Instructions!));
@@ -264,6 +264,56 @@ public class OpenAICompatibleChatClient : IChatClient
     {
         await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
         return await response.Content.ReadAsStringAsyncCompat(cancellationToken).ConfigureAwait(false);
+    }
+
+    private static IEnumerable<ChatMessage> NormalizeMessages(IEnumerable<ChatMessage> messages)
+    {
+        foreach (var message in messages)
+        {
+            if (message.Role != ChatRole.Tool)
+            {
+                yield return message;
+                continue;
+            }
+
+            var results = message.Contents.OfType<FunctionResultContent>().ToList();
+            if (results.Count <= 1)
+            {
+                yield return message;
+                continue;
+            }
+
+            var unsupportedContents = message.Contents
+                .Where(static content => content is not FunctionResultContent)
+                .ToList();
+
+            if (unsupportedContents.Count > 0)
+            {
+                throw new NotSupportedException(
+                    "包含多个 FunctionResultContent 的 tool 消息不能再混合其他内容，请拆成多条独立的 tool 消息。");
+            }
+
+            for (var i = 0; i < results.Count; i++)
+            {
+                yield return CreateToolResultMessage(message, results[i], i);
+            }
+        }
+    }
+
+    private static ChatMessage CreateToolResultMessage(ChatMessage source, FunctionResultContent result, int index)
+    {
+        var message = new ChatMessage(ChatRole.Tool, [result])
+        {
+            AuthorName = source.AuthorName,
+            CreatedAt = source.CreatedAt,
+            MessageId = source.MessageId is null ? null : $"{source.MessageId}:{index}",
+            RawRepresentation = source.RawRepresentation,
+            AdditionalProperties = source.AdditionalProperties is null
+                ? null
+                : new AdditionalPropertiesDictionary(source.AdditionalProperties),
+        };
+
+        return message;
     }
 
     private static void ApplyChatOptionsOverrides(OpenAICompatibleChatClientOptions target, ChatOptions source)
