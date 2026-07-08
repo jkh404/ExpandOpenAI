@@ -123,7 +123,7 @@ internal sealed class OpenAICompatibleRequestBuilder
 
         if (options?.ResponseFormat is not null)
         {
-            body["response_format"] = JsonSerializer.SerializeToNode(options.ResponseFormat, _serializerOptions);
+            body["response_format"] = SerializeResponseFormat(options.ResponseFormat);
         }
 
         if (options?.Reasoning is not null)
@@ -353,6 +353,80 @@ internal sealed class OpenAICompatibleRequestBuilder
             },
             _ => throw new NotSupportedException($"未实现工具模式 {toolMode.GetType().FullName} 的默认序列化。"),
         };
+    }
+
+    private JsonNode SerializeResponseFormat(ChatResponseFormat responseFormat)
+    {
+        return responseFormat switch
+        {
+            ChatResponseFormatText => new JsonObject
+            {
+                ["type"] = "text",
+            },
+            ChatResponseFormatJson json when json.Schema is null => new JsonObject
+            {
+                ["type"] = "json_object",
+            },
+            ChatResponseFormatJson json => SerializeJsonSchemaResponseFormat(json),
+            _ => JsonSerializer.SerializeToNode(responseFormat, _serializerOptions)
+                ?? throw new NotSupportedException($"未实现响应格式 {responseFormat.GetType().FullName} 的默认序列化。"),
+        };
+    }
+
+    private JsonObject SerializeJsonSchemaResponseFormat(ChatResponseFormatJson responseFormat)
+    {
+        var schemaNode = responseFormat.Schema is JsonElement schema
+            ? JsonSerializer.SerializeToNode(schema, _serializerOptions)
+            : null;
+
+        if (schemaNode is null)
+        {
+            throw new InvalidOperationException("Json schema response format 缺少 Schema。");
+        }
+
+        var jsonSchema = new JsonObject
+        {
+            ["name"] = SanitizeResponseFormatName(responseFormat.SchemaName),
+            ["schema"] = schemaNode,
+        };
+
+        if (!string.IsNullOrWhiteSpace(responseFormat.SchemaDescription))
+        {
+            jsonSchema["description"] = responseFormat.SchemaDescription;
+        }
+
+        return new JsonObject
+        {
+            ["type"] = "json_schema",
+            ["json_schema"] = jsonSchema,
+        };
+    }
+
+    private static string SanitizeResponseFormatName(string? name)
+    {
+        const string fallbackName = "schema";
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return fallbackName;
+        }
+
+        var effectiveName = name!;
+        var builder = new StringBuilder(Math.Min(effectiveName.Length, 64));
+
+        foreach (var character in effectiveName)
+        {
+            if (builder.Length >= 64)
+            {
+                break;
+            }
+
+            builder.Append(char.IsLetterOrDigit(character) || character is '_' or '-'
+                ? character
+                : '_');
+        }
+
+        var sanitized = builder.ToString().Trim('_');
+        return string.IsNullOrWhiteSpace(sanitized) ? fallbackName : sanitized;
     }
 
     private static void AddAuthenticationHeader(HttpRequestMessage request, OpenAICompatibleChatClientOptions options)

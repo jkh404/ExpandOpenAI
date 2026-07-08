@@ -337,6 +337,44 @@ var client = new OpenAICompatibleChatClient(new OpenAICompatibleChatClientOption
 });
 ```
 
+## `response_format` 支持
+
+`ExpandOpenAI` 会把 `Microsoft.Extensions.AI.ChatResponseFormat` 映射为 OpenAI Compatible `chat/completions` 所需的 `response_format`：
+
+- `ChatResponseFormat.Text` -> `{ "type": "text" }`
+- `ChatResponseFormat.Json` -> `{ "type": "json_object" }`
+- `ChatResponseFormat.ForJsonSchema(...)` -> `{ "type": "json_schema", "json_schema": { ... } }`
+
+例如启用 JSON mode：
+
+```csharp
+using ExpandOpenAI;
+using Microsoft.Extensions.AI;
+
+var client = new OpenAICompatibleChatClient(new OpenAICompatibleChatClientOptions
+{
+    Endpoint = new Uri("https://api.openai.com/v1"),
+    ApiKey = "<your-api-key>",
+    ModelId = "gpt-4o-mini",
+    ResponseFormat = ChatResponseFormat.Json,
+});
+```
+
+如果你希望模型按 JSON Schema 输出：
+
+```csharp
+using ExpandOpenAI;
+using Microsoft.Extensions.AI;
+
+var client = new OpenAICompatibleChatClient(new OpenAICompatibleChatClientOptions
+{
+    Endpoint = new Uri("https://api.openai.com/v1"),
+    ApiKey = "<your-api-key>",
+    ModelId = "gpt-4o-mini",
+    ResponseFormat = ChatResponseFormat.ForJsonSchema<MyResponse>(),
+});
+```
+
 ## 多模态支持
 
 默认请求构造器支持以下内容类型：
