@@ -70,6 +70,8 @@ public class OpenAICompatibleReranker : IDisposable
         ArgumentGuard.ThrowIfNull(options, nameof(options));
         ArgumentGuard.ThrowIfNull(options.Endpoint, nameof(options.Endpoint));
         ArgumentGuard.ThrowIfNullOrWhiteSpace(options.ModelId, nameof(options.ModelId));
+        ArgumentGuard.ThrowIfNull(options.RetryOptions, nameof(options.RetryOptions));
+        options.RetryOptions.Validate(nameof(options.RetryOptions));
 
         if (options.DefaultTopN is <= 0)
         {
@@ -115,14 +117,17 @@ public class OpenAICompatibleReranker : IDisposable
         ArgumentGuard.ThrowIfDisposed(_disposed, this);
 
         var preparedDocuments = PrepareDocuments(query, documents, options);
-        using var request = _requestBuilder.CreateRequestMessage(
-            query,
-            preparedDocuments,
-            options,
-            ConfigureRequestBody,
-            ConfigureRequest);
-
-        using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseContentRead, cancellationToken).ConfigureAwait(false);
+        using var response = await HttpRetryPolicy.SendAsync(
+            _httpClient,
+            () => _requestBuilder.CreateRequestMessage(
+                query,
+                preparedDocuments,
+                options,
+                ConfigureRequestBody,
+                ConfigureRequest),
+            HttpCompletionOption.ResponseContentRead,
+            _options.RetryOptions,
+            cancellationToken).ConfigureAwait(false);
         var payload = await ReadSuccessfulResponseAsync(response, cancellationToken).ConfigureAwait(false);
 
         using var document = JsonDocument.Parse(payload);

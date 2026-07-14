@@ -39,6 +39,8 @@ public class OpenAICompatibleRerankerOptions
 
     public Action<JsonObject, string, IReadOnlyList<string>, RerankingOptions?>? ConfigureRequestBody { get; init; }
 
+    public OpenAICompatibleHttpRetryOptions RetryOptions { get; init; } = new OpenAICompatibleHttpRetryOptions();
+
     public static OpenAICompatibleRerankerOptions FromEnvironment()
     {
         var endpointValue = GetRequiredEnvironmentVariable(EndpointEnvironmentVariable);

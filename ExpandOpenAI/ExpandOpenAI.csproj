@@ -11,8 +11,8 @@
     <PackageId>ExpandOpenAI</PackageId>
     <Title>ExpandOpenAI</Title>
     <Authors>jkh404</Authors>
-    <Description>OpenAI-compatible chat, embedding, and reranking implementations with streaming, tool calling, multimodal input, and flexible request extensions.</Description>
-    <PackageTags>OpenAI;AI;Microsoft.Extensions.AI;ChatClient;Embeddings;Vector;Rerank;Reranking;DashScope;Multimodal</PackageTags>
+    <Description>OpenAI-compatible Chat Completions, Responses API, embedding, and reranking implementations with streaming, tool calling, multimodal input, and flexible request extensions.</Description>
+    <PackageTags>OpenAI;Responses API;AI;Microsoft.Extensions.AI;ChatClient;Embeddings;Vector;Rerank;Reranking;DashScope;Multimodal</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageProjectUrl>https://github.com/jkh404/ExpandOpenAI</PackageProjectUrl>

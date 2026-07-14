@@ -1,79 +1,82 @@
-﻿using Microsoft.Extensions.AI;
+using System.Text.Json.Nodes;
+using Microsoft.Extensions.AI;
 
 namespace ExpandOpenAI.AgentBase;
 
-public class AgentOptions
+/// <summary>
+/// Agent 的稳定配置。创建 <see cref="AIAgent"/> 时会生成配置快照。
+/// </summary>
+public sealed class AgentOptions
 {
     /// <summary>
-    /// 系统提示模板，支持占位符（例如：{{userName}}），在运行时会被模板引擎结合SystemPromptTemplateDic替换为实际值
+    /// 系统提示模板，支持 <c>{{name}}</c> 和 <c>{{user.name}}</c> 占位符。
     /// </summary>
-    public string SystemPromptTemplate { get; set; } = string.Empty;
-
-
-    public DynamicConcurrentDictionary? SystemPromptTemplateDic { get; set; }
+    public string SystemPromptTemplate { get; init; } = string.Empty;
 
     /// <summary>
-    /// 消息在进入 AI 或进入历史记录前的处理器。
+    /// 系统提示模板变量。可使用 <see cref="DynamicConcurrentDictionary"/> 提供运行时动态值。
     /// </summary>
-    public IAIMessageHandler? AIMessageHandler { get; set; }
+    public IReadOnlyDictionary<string, JsonNode?>? SystemPromptTemplateValues { get; init; }
 
     /// <summary>
-    /// 是否对本轮准备发给 AI 的消息集合触发压缩。
+    /// 模板变量缺失时的处理方式。
     /// </summary>
-    public Func<IReadOnlyList<ChatMessage>, bool>? ShouldCompressMessages { get; set; }
+    public MissingTemplateValueBehavior MissingTemplateValueBehavior { get; init; }
 
     /// <summary>
-    /// 模型最大上下文长度（Token 数）。
-    /// 供外部触发压缩策略或压缩器实现参考。
+    /// 用户消息和助手消息进入模型或历史前的处理器。
     /// </summary>
-    public int? MaxContextLength { get; set; }
+    public IAgentMessageHandler? MessageHandler { get; init; }
 
     /// <summary>
-    /// IChatClient 调用失败时的最大重试次数。
-    /// 上下文超限后的强制压缩重试不计入此次数。
+    /// 历史消息压缩器。
     /// </summary>
-    public int ChatClientRetryCount { get; set; }
+    public ITokenCompressor? TokenCompressor { get; init; }
 
     /// <summary>
-    /// 当前 Agent 可提供给模型调用的工具集合。
-    /// 自动工具调用要求工具本身可被本地执行，通常应传入 <see cref="AIFunction"/>。
+    /// 判断本轮发送前是否应压缩历史。上下文超限后的强制压缩不受此委托限制。
     /// </summary>
-    public IList<AITool> Tools { get; set; } = new List<AITool>();
+    public Func<IReadOnlyList<ChatMessage>, bool>? ShouldCompressMessages { get; init; }
 
     /// <summary>
-    /// 工具调用模式。
+    /// 默认模型调用选项。每次运行都会克隆该实例。
     /// </summary>
-    public ChatToolMode? ToolMode { get; set; }
+    public ChatOptions? DefaultChatOptions { get; init; }
 
     /// <summary>
-    /// 是否允许模型在单次响应中请求多个工具调用。
+    /// 工具执行审批。默认拒绝本地工具执行。
     /// </summary>
-    public bool? AllowMultipleToolCalls { get; set; }
+    public Func<FunctionInvocationContext, CancellationToken, ValueTask<bool>> ToolApprovalAsync { get; init; }
+        = static (_, _) => new ValueTask<bool>(false);
 
     /// <summary>
-    /// 工具执行审批委托。返回 <see langword="true"/> 时允许执行，返回 <see langword="false"/> 时拒绝执行。
-    /// 默认拒绝所有工具执行。
+    /// 自定义上下文超限异常识别器。未配置时使用内置的跨提供商文本识别。
     /// </summary>
-    public Func<AITool, bool> ToolApprovalFunc { get; set; } = static _ => false;
+    public Func<Exception, bool>? ContextLengthExceededDetector { get; init; }
 
-    public IDictionary<string, object> RequestBody { get; set; } = new Dictionary<string, object>();
+    internal AgentOptions CreateSnapshot()
+    {
+        if (ToolApprovalAsync is null)
+        {
+            throw new ArgumentException("ToolApprovalAsync 不能为 null。", nameof(ToolApprovalAsync));
+        }
 
+        return new AgentOptions
+        {
+            SystemPromptTemplate = SystemPromptTemplate ?? string.Empty,
+            SystemPromptTemplateValues = SystemPromptTemplateValues,
+            MissingTemplateValueBehavior = MissingTemplateValueBehavior,
+            MessageHandler = MessageHandler,
+            TokenCompressor = TokenCompressor,
+            ShouldCompressMessages = ShouldCompressMessages,
+            DefaultChatOptions = DefaultChatOptions?.Clone(),
+            ToolApprovalAsync = ToolApprovalAsync,
+            ContextLengthExceededDetector = ContextLengthExceededDetector,
+        };
+    }
 
-
-
+    internal ChatOptions? CreateChatOptions(ChatOptions? runOptions)
+    {
+        return (runOptions ?? DefaultChatOptions)?.Clone();
+    }
 }
-
-//public class McpHttpServerInfo
-//{
-//    public string Name { get; set; }
-//    public string? ServerUrl { get; set; }
-//    public IDictionary<string,object>? Header{ get; set; }
-
-
-//}
-//public class McpStdioServerInfo
-//{
-//    public string Name { get; set; }
-//    public string? Command { get; set; }
-//    public List<string> Args { get; set; }
-//}

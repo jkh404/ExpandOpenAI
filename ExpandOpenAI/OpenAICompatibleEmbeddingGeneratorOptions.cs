@@ -39,6 +39,8 @@ public class OpenAICompatibleEmbeddingGeneratorOptions
 
     public Action<JsonObject, IReadOnlyList<string>, EmbeddingGenerationOptions?>? ConfigureRequestBody { get; init; }
 
+    public OpenAICompatibleHttpRetryOptions RetryOptions { get; init; } = new OpenAICompatibleHttpRetryOptions();
+
     public static OpenAICompatibleEmbeddingGeneratorOptions FromEnvironment()
     {
         var endpointValue = GetRequiredEnvironmentVariable(EndpointEnvironmentVariable);

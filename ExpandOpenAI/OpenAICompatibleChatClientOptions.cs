@@ -36,6 +36,7 @@ public class OpenAICompatibleChatClientOptions : ChatOptions
             : other.RequestBody.ToDictionary(pair => pair.Key, pair => pair.Value);
         ConfigureRequest = other.ConfigureRequest;
         ConfigureRequestBody = other.ConfigureRequestBody;
+        RetryOptions = other.RetryOptions;
     }
 
     public Uri Endpoint { get; set; } = null!;
@@ -58,6 +59,8 @@ public class OpenAICompatibleChatClientOptions : ChatOptions
     public Action<HttpRequestMessage, IReadOnlyList<ChatMessage>, ChatOptions?, bool>? ConfigureRequest { get; set; }
 
     public Action<JsonObject, IReadOnlyList<ChatMessage>, ChatOptions?, bool>? ConfigureRequestBody { get; set; }
+
+    public OpenAICompatibleHttpRetryOptions RetryOptions { get; set; } = new OpenAICompatibleHttpRetryOptions();
 
     public override ChatOptions Clone() => new OpenAICompatibleChatClientOptions(this);
 

@@ -70,6 +70,8 @@ public class OpenAICompatibleEmbeddingGenerator : IEmbeddingGenerator<string, Em
         ArgumentGuard.ThrowIfNull(options, nameof(options));
         ArgumentGuard.ThrowIfNull(options.Endpoint, nameof(options.Endpoint));
         ArgumentGuard.ThrowIfNullOrWhiteSpace(options.ModelId, nameof(options.ModelId));
+        ArgumentGuard.ThrowIfNull(options.RetryOptions, nameof(options.RetryOptions));
+        options.RetryOptions.Validate(nameof(options.RetryOptions));
 
         _httpClient = httpClient;
         _disposeHttpClient = disposeHttpClient;
@@ -109,13 +111,16 @@ public class OpenAICompatibleEmbeddingGenerator : IEmbeddingGenerator<string, Em
         ArgumentGuard.ThrowIfDisposed(_disposed, this);
 
         var preparedValues = PrepareValues(values, options);
-        using var request = _requestBuilder.CreateRequestMessage(
-            preparedValues,
-            options,
-            ConfigureRequestBody,
-            ConfigureRequest);
-
-        using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseContentRead, cancellationToken).ConfigureAwait(false);
+        using var response = await HttpRetryPolicy.SendAsync(
+            _httpClient,
+            () => _requestBuilder.CreateRequestMessage(
+                preparedValues,
+                options,
+                ConfigureRequestBody,
+                ConfigureRequest),
+            HttpCompletionOption.ResponseContentRead,
+            _options.RetryOptions,
+            cancellationToken).ConfigureAwait(false);
         var payload = await ReadSuccessfulResponseAsync(response, cancellationToken).ConfigureAwait(false);
 
         using var document = JsonDocument.Parse(payload);

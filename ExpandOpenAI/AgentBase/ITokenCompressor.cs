@@ -1,11 +1,17 @@
-﻿using Microsoft.Extensions.AI;
+using Microsoft.Extensions.AI;
 
 namespace ExpandOpenAI.AgentBase;
 
 /// <summary>
-/// 上下文Token压缩器接口，用于在对话中压缩消息。
+/// 压缩不含系统提示的历史消息。
 /// </summary>
 public interface ITokenCompressor
 {
-    Task<IList<ChatMessage>> CompressAsync(IList<ChatMessage> messages, IChatClient? chatClient = null);
+    /// <summary>
+    /// 返回压缩后的历史。结果不能包含 <see cref="ChatRole.System"/> 消息。
+    /// </summary>
+    ValueTask<IReadOnlyList<ChatMessage>> CompressAsync(
+        IReadOnlyList<ChatMessage> messages,
+        IChatClient chatClient,
+        CancellationToken cancellationToken = default);
 }

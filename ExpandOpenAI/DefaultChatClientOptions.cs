@@ -23,6 +23,7 @@ public sealed class DefaultChatClientOptions : OpenAICompatibleChatClientOptions
             RequestBody = options.RequestBody,
             ConfigureRequest = options.ConfigureRequest,
             ConfigureRequestBody = options.ConfigureRequestBody,
+            RetryOptions = options.RetryOptions,
         };
     }
 }

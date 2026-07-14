@@ -1,46 +1,55 @@
 using System.Runtime.CompilerServices;
 using System.Text.Json;
-using Microsoft.Extensions.AI;
+using System.Text.Json.Nodes;
 using ExpandOpenAI.Internal;
+using Microsoft.Extensions.AI;
 
 namespace ExpandOpenAI;
 
 /// <summary>
-/// 默认通用的 ChatClient，目标兼容 OpenAI，可扩展，灵活。
+/// 以 OpenAI Responses API 协议实现的 <see cref="IChatClient"/>。
 /// </summary>
-public class OpenAICompatibleChatClient : IChatClient
+public class OpenAICompatibleResponsesClient : IChatClient
 {
-    public const string ApiKeyEnvironmentVariable = OpenAICompatibleChatClientOptions.ApiKeyEnvironmentVariable;
-    public const string ModelEnvironmentVariable = OpenAICompatibleChatClientOptions.ModelEnvironmentVariable;
-    public const string EndpointEnvironmentVariable = OpenAICompatibleChatClientOptions.EndpointEnvironmentVariable;
-    public const string RequestPathEnvironmentVariable = OpenAICompatibleChatClientOptions.RequestPathEnvironmentVariable;
+    public const string ApiKeyEnvironmentVariable = OpenAICompatibleResponsesClientOptions.ApiKeyEnvironmentVariable;
+    public const string ModelEnvironmentVariable = OpenAICompatibleResponsesClientOptions.ModelEnvironmentVariable;
+    public const string ModelFallbackEnvironmentVariable = OpenAICompatibleResponsesClientOptions.ModelFallbackEnvironmentVariable;
+    public const string EndpointEnvironmentVariable = OpenAICompatibleResponsesClientOptions.EndpointEnvironmentVariable;
+    public const string RequestPathEnvironmentVariable = OpenAICompatibleResponsesClientOptions.RequestPathEnvironmentVariable;
 
     private readonly HttpClient _httpClient;
     private readonly bool _disposeHttpClient;
-    private readonly OpenAICompatibleChatClientOptions _options;
+    private readonly OpenAICompatibleResponsesClientOptions _options;
     private readonly JsonSerializerOptions _serializerOptions;
-    private readonly OpenAICompatibleRequestBuilder _requestBuilder;
-    private readonly OpenAICompatibleResponseParser _responseParser;
+    private readonly OpenAICompatibleResponsesRequestBuilder _requestBuilder;
+    private readonly OpenAICompatibleResponsesResponseParser _responseParser;
     private bool _disposed;
 
-    public HttpClient HttpClient => _httpClient;
-    public OpenAICompatibleChatClient()
-        : this(OpenAICompatibleChatClientOptions.FromEnvironment())
+    public OpenAICompatibleResponsesClient()
+        : this(OpenAICompatibleResponsesClientOptions.FromEnvironment())
     {
     }
 
-    public OpenAICompatibleChatClient(OpenAICompatibleChatClientOptions options)
+    public OpenAICompatibleResponsesClient(OpenAICompatibleResponsesClientOptions options)
         : this(new HttpClient(), options, disposeHttpClient: true)
     {
     }
 
-    public OpenAICompatibleChatClient(HttpMessageHandler httpMessageHandler, OpenAICompatibleChatClientOptions options, bool disposeHandler = true,TimeSpan? timeout = null)
+    public OpenAICompatibleResponsesClient(
+        HttpMessageHandler httpMessageHandler,
+        OpenAICompatibleResponsesClientOptions options,
+        bool disposeHandler = true,
+        TimeSpan? timeout = null)
         : this(CreateHttpClient(httpMessageHandler, disposeHandler, timeout), options, disposeHttpClient: true)
     {
     }
 
-    public OpenAICompatibleChatClient(string modelId, string apiKey, Uri endpoint, string requestPath = "chat/completions")
-        : this(new OpenAICompatibleChatClientOptions
+    public OpenAICompatibleResponsesClient(
+        string modelId,
+        string apiKey,
+        Uri endpoint,
+        string requestPath = "responses")
+        : this(new OpenAICompatibleResponsesClientOptions
         {
             ModelId = modelId,
             ApiKey = apiKey,
@@ -50,7 +59,10 @@ public class OpenAICompatibleChatClient : IChatClient
     {
     }
 
-    public OpenAICompatibleChatClient(HttpClient httpClient, OpenAICompatibleChatClientOptions options, bool disposeHttpClient)
+    public OpenAICompatibleResponsesClient(
+        HttpClient httpClient,
+        OpenAICompatibleResponsesClientOptions options,
+        bool disposeHttpClient)
     {
         ArgumentGuard.ThrowIfNull(httpClient, nameof(httpClient));
         ArgumentGuard.ThrowIfNull(options, nameof(options));
@@ -63,32 +75,11 @@ public class OpenAICompatibleChatClient : IChatClient
         _disposeHttpClient = disposeHttpClient;
         _options = options;
         _serializerOptions = options.SerializerOptions ?? new JsonSerializerOptions(AIJsonUtilities.DefaultOptions);
-        _requestBuilder = new OpenAICompatibleRequestBuilder(_options, _serializerOptions);
-        _responseParser = new OpenAICompatibleResponseParser(_serializerOptions);
+        _requestBuilder = new OpenAICompatibleResponsesRequestBuilder(_options, _serializerOptions);
+        _responseParser = new OpenAICompatibleResponsesResponseParser(_serializerOptions);
     }
 
-    private static HttpClient CreateHttpClient(HttpMessageHandler httpMessageHandler, bool disposeHandler,TimeSpan? timeout=null)
-    {
-        
-        ArgumentGuard.ThrowIfNull(httpMessageHandler, nameof(httpMessageHandler));
-        var httpClient= new HttpClient(httpMessageHandler, disposeHandler: disposeHandler);
-        httpClient.Timeout = timeout?? httpClient.Timeout;
-        return httpClient;
-    }
-
-    public void Dispose()
-    {
-        if (_disposed)
-        {
-            return;
-        }
-
-        _disposed = true;
-        if (_disposeHttpClient)
-        {
-            _httpClient.Dispose();
-        }
-    }
+    public HttpClient HttpClient => _httpClient;
 
     public async Task<ChatResponse> GetResponseAsync(
         IEnumerable<ChatMessage> messages,
@@ -110,8 +101,8 @@ public class OpenAICompatibleChatClient : IChatClient
             HttpCompletionOption.ResponseContentRead,
             _options.RetryOptions,
             cancellationToken).ConfigureAwait(false);
-        var payload = await ReadSuccessfulResponseAsync(response, cancellationToken).ConfigureAwait(false);
 
+        var payload = await ReadSuccessfulResponseAsync(response, cancellationToken).ConfigureAwait(false);
         using var document = JsonDocument.Parse(payload);
         return _responseParser.ParseResponse(document.RootElement);
     }
@@ -139,7 +130,7 @@ public class OpenAICompatibleChatClient : IChatClient
 
         await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
 
-        var streamState = _responseParser.CreateStreamingState();
+        var state = _responseParser.CreateStreamingState();
         using var stream = await response.Content.ReadAsStreamAsyncCompat(cancellationToken).ConfigureAwait(false);
         using var reader = new StreamReader(stream);
         var eventLines = new List<string>();
@@ -147,7 +138,6 @@ public class OpenAICompatibleChatClient : IChatClient
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
-
             var line = await reader.ReadLineAsyncCompat(cancellationToken).ConfigureAwait(false);
             if (line is null)
             {
@@ -156,7 +146,7 @@ public class OpenAICompatibleChatClient : IChatClient
 
             if (string.IsNullOrWhiteSpace(line))
             {
-                foreach (var update in _responseParser.ParseStreamingEvent(eventLines, streamState))
+                foreach (var update in _responseParser.ParseStreamingEvent(eventLines, state))
                 {
                     yield return update;
                 }
@@ -168,12 +158,12 @@ public class OpenAICompatibleChatClient : IChatClient
             eventLines.Add(line);
         }
 
-        foreach (var update in _responseParser.ParseStreamingEvent(eventLines, streamState))
+        foreach (var update in _responseParser.ParseStreamingEvent(eventLines, state))
         {
             yield return update;
         }
 
-        foreach (var update in _responseParser.FlushPendingToolCalls(streamState))
+        foreach (var update in _responseParser.FlushPendingItems(state))
         {
             yield return update;
         }
@@ -206,30 +196,39 @@ public class OpenAICompatibleChatClient : IChatClient
         return null;
     }
 
-    protected virtual IReadOnlyList<ChatMessage> PrepareMessages(IEnumerable<ChatMessage> messages, ChatOptions? options)
+    public void Dispose()
     {
-        ArgumentGuard.ThrowIfNull(messages, nameof(messages));
-
-        var list = NormalizeMessages(messages).ToList();
-        if (!string.IsNullOrWhiteSpace(options?.Instructions))
+        if (_disposed)
         {
-            list.Insert(0, new ChatMessage(ChatRole.System, options.Instructions!));
+            return;
         }
 
-        return list;
+        _disposed = true;
+        if (_disposeHttpClient)
+        {
+            _httpClient.Dispose();
+        }
     }
 
-    protected virtual OpenAICompatibleChatClientOptions CreateEffectiveOptions(ChatOptions? options)
+    protected virtual IReadOnlyList<ChatMessage> PrepareMessages(
+        IEnumerable<ChatMessage> messages,
+        ChatOptions? options)
+    {
+        ArgumentGuard.ThrowIfNull(messages, nameof(messages));
+        return messages.ToList();
+    }
+
+    protected virtual OpenAICompatibleResponsesClientOptions CreateEffectiveOptions(ChatOptions? options)
     {
         if (options is null || ReferenceEquals(options, _options))
         {
             return _options;
         }
 
-        var merged = (OpenAICompatibleChatClientOptions)_options.Clone();
+        var merged = (OpenAICompatibleResponsesClientOptions)_options.Clone();
         ApplyChatOptionsOverrides(merged, options);
 
-        if (options is OpenAICompatibleChatClientOptions compatibleOptions)
+        if (options is OpenAICompatibleResponsesClientOptions compatibleOptions)
         {
             ApplyExtendedOptionsOverrides(merged, compatibleOptions);
         }
@@ -238,7 +237,7 @@ public class OpenAICompatibleChatClient : IChatClient
     }
 
     protected virtual void ConfigureRequestBody(
-        System.Text.Json.Nodes.JsonObject body,
+        JsonObject body,
         IReadOnlyList<ChatMessage> messages,
         ChatOptions? options,
         bool stream)
@@ -253,7 +252,24 @@ public class OpenAICompatibleChatClient : IChatClient
     {
     }
 
-    private static async Task EnsureSuccessAsync(HttpResponseMessage response, CancellationToken cancellationToken)
+    private static HttpClient CreateHttpClient(
+        HttpMessageHandler httpMessageHandler,
+        bool disposeHandler,
+        TimeSpan? timeout)
+    {
+        ArgumentGuard.ThrowIfNull(httpMessageHandler, nameof(httpMessageHandler));
+        var httpClient = new HttpClient(httpMessageHandler, disposeHandler);
+        if (timeout is not null)
+        {
+            httpClient.Timeout = timeout.Value;
+        }
+
+        return httpClient;
+    }
+
+    private static async Task EnsureSuccessAsync(
+        HttpResponseMessage response,
+        CancellationToken cancellationToken)
     {
         if (response.IsSuccessStatusCode)
         {
@@ -265,67 +281,22 @@ public class OpenAICompatibleChatClient : IChatClient
             $"请求失败，状态码 {(int)response.StatusCode} ({response.ReasonPhrase})。响应内容: {body}");
     }
 
-    private static async Task<string> ReadSuccessfulResponseAsync(HttpResponseMessage response, CancellationToken cancellationToken)
+    private static async Task<string> ReadSuccessfulResponseAsync(
+        HttpResponseMessage response,
+        CancellationToken cancellationToken)
     {
         await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
         return await response.Content.ReadAsStringAsyncCompat(cancellationToken).ConfigureAwait(false);
     }
 
-    private static IEnumerable<ChatMessage> NormalizeMessages(IEnumerable<ChatMessage> messages)
-    {
-        foreach (var message in messages)
-        {
-            if (message.Role != ChatRole.Tool)
-            {
-                yield return message;
-                continue;
-            }
-
-            var results = message.Contents.OfType<FunctionResultContent>().ToList();
-            if (results.Count <= 1)
-            {
-                yield return message;
-                continue;
-            }
-
-            var unsupportedContents = message.Contents
-                .Where(static content => content is not FunctionResultContent)
-                .ToList();
-
-            if (unsupportedContents.Count > 0)
-            {
-                throw new NotSupportedException(
-                    "包含多个 FunctionResultContent 的 tool 消息不能再混合其他内容，请拆成多条独立的 tool 消息。");
-            }
-
-            for (var i = 0; i < results.Count; i++)
-            {
-                yield return CreateToolResultMessage(message, results[i], i);
-            }
-        }
-    }
-
-    private static ChatMessage CreateToolResultMessage(ChatMessage source, FunctionResultContent result, int index)
-    {
-        var message = new ChatMessage(ChatRole.Tool, [result])
-        {
-            AuthorName = source.AuthorName,
-            CreatedAt = source.CreatedAt,
-            MessageId = source.MessageId is null ? null : $"{source.MessageId}:{index}",
-            RawRepresentation = source.RawRepresentation,
-            AdditionalProperties = source.AdditionalProperties is null
-                ? null
-                : new AdditionalPropertiesDictionary(source.AdditionalProperties),
-        };
-
-        return message;
-    }
-
-    private static void ApplyChatOptionsOverrides(OpenAICompatibleChatClientOptions target, ChatOptions source)
+    private static void ApplyChatOptionsOverrides(
+        OpenAICompatibleResponsesClientOptions target,
+        ChatOptions source)
     {
         if (source.ConversationId is not null)
         {
             target.ConversationId = source.ConversationId;
+            target.Conversation = null;
         }
 
         if (source.Instructions is not null)
@@ -366,6 +337,11 @@ public class OpenAICompatibleChatClient : IChatClient
         if (source.Seed is not null)
         {
             target.Seed = source.Seed;
+        }
+
+        if (source.Reasoning is not null)
+        {
+            target.Reasoning = source.Reasoning;
         }
 
         if (source.ResponseFormat is not null)
@@ -429,8 +405,8 @@ public class OpenAICompatibleChatClient : IChatClient
     }
 
     private static void ApplyExtendedOptionsOverrides(
-        OpenAICompatibleChatClientOptions target,
-        OpenAICompatibleChatClientOptions source)
+        OpenAICompatibleResponsesClientOptions target,
+        OpenAICompatibleResponsesClientOptions source)
     {
         if (source.ApiKey is not null)
         {
@@ -439,7 +415,10 @@ public class OpenAICompatibleChatClient : IChatClient
 
         if (source.Headers.Count > 0)
         {
-            var headers = target.Headers.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase);
+            var headers = target.Headers.ToDictionary(
+                static pair => pair.Key,
+                static pair => pair.Value,
+                StringComparer.OrdinalIgnoreCase);
             foreach (var pair in source.Headers)
             {
                 headers[pair.Key] = pair.Value;
@@ -452,8 +431,7 @@ public class OpenAICompatibleChatClient : IChatClient
         {
             var requestBody = target.RequestBody is null
                 ? new Dictionary<string, object?>()
-                : target.RequestBody.ToDictionary(pair => pair.Key, pair => pair.Value);
-
+                : target.RequestBody.ToDictionary(static pair => pair.Key, static pair => pair.Value);
             foreach (var pair in source.RequestBody)
             {
                 requestBody[pair.Key] = pair.Value;
@@ -462,6 +440,14 @@ public class OpenAICompatibleChatClient : IChatClient
             target.RequestBody = requestBody;
         }
 
+        target.Store = source.Store ?? target.Store;
+        target.PreviousResponseId = source.PreviousResponseId ?? target.PreviousResponseId;
+        target.Conversation = source.Conversation ?? target.Conversation;
+        target.Include = source.Include ?? target.Include;
+        target.Truncation = source.Truncation ?? target.Truncation;
+        target.Metadata = source.Metadata ?? target.Metadata;
+        target.MaxToolCalls = source.MaxToolCalls ?? target.MaxToolCalls;
+
         if (!ReferenceEquals(target.ConfigureRequest, source.ConfigureRequest) && source.ConfigureRequest is not null)
         {
             target.ConfigureRequest = target.ConfigureRequest is null
@@ -469,7 +455,8 @@ public class OpenAICompatibleChatClient : IChatClient
                 : target.ConfigureRequest + source.ConfigureRequest;
         }
 
-        if (!ReferenceEquals(target.ConfigureRequestBody, source.ConfigureRequestBody) && source.ConfigureRequestBody is not null)
+        if (!ReferenceEquals(target.ConfigureRequestBody, source.ConfigureRequestBody)
+            && source.ConfigureRequestBody is not null)
         {
             target.ConfigureRequestBody = target.ConfigureRequestBody is null
                 ? source.ConfigureRequestBody

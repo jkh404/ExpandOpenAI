@@ -4,16 +4,17 @@
 
 | 包 | 项目 | README | 说明 |
 | --- | --- | --- | --- |
-| `ExpandOpenAI` | `ExpandOpenAI/ExpandOpenAI.csproj` | `ExpandOpenAI/README.md` | OpenAI Compatible chat、embeddings 和 reranking 实现，基于 `Microsoft.Extensions.AI`。 |
+| `ExpandOpenAI` | `ExpandOpenAI/ExpandOpenAI.csproj` | `ExpandOpenAI/README.md` | OpenAI Compatible Chat Completions、Responses API、embeddings 和 reranking 实现，基于 `Microsoft.Extensions.AI`。 |
 | `ExpandVectorStore.Qdrant` | `ExpandVectorStore.Qdrant/ExpandVectorStore.Qdrant.csproj` | `ExpandVectorStore.Qdrant/README.md` | Qdrant vector store provider，基于 `Microsoft.Extensions.VectorData`。 |
 
 根目录 README 只作为解决方案入口。每个包的 NuGet 说明、示例和限制请维护在对应项目目录下的 `README.md`，并由各自的 `.csproj` 打包进 nupkg。
 
 ## 项目结构
 
-- `ExpandOpenAI/`：核心 OpenAI Compatible chat、embeddings 和 reranking 包。
+- `ExpandOpenAI/`：核心 OpenAI Compatible Chat Completions、Responses API、embeddings 和 reranking 包。
 - `ExpandVectorStore.Qdrant/`：Qdrant 向量存储包。
 - `ExpandOpenAI.TestConsole/`：本地示例和验证项目。
+- `ExpandOpenAI.Tests/`：核心类库的自动化测试项目。
 - `scripts/`：解决方案级脚本。
 - `artifacts/`：本地构建和打包输出。
 
@@ -21,6 +22,12 @@
 
 ```powershell
 dotnet build ExpandOpenAI.slnx
+```
+
+运行自动化测试：
+
+```powershell
+dotnet test ExpandOpenAI.slnx
 ```
 
 ## NuGet 打包

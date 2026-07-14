@@ -5,6 +5,21 @@ using System.Text.RegularExpressions;
 namespace ExpandOpenAI.AgentBase;
 
 /// <summary>
+/// 模板变量缺失时的处理方式。
+/// </summary>
+public enum MissingTemplateValueBehavior
+{
+    /// <summary>替换为空字符串。</summary>
+    Empty,
+
+    /// <summary>保留原占位符。</summary>
+    PreservePlaceholder,
+
+    /// <summary>抛出 <see cref="KeyNotFoundException"/>。</summary>
+    Throw,
+}
+
+/// <summary>
 /// 渲染系统提示模板中的占位符。
 /// </summary>
 public static class SystemPromptTemplateEngine
@@ -14,32 +29,42 @@ public static class SystemPromptTemplateEngine
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     /// <summary>
-    /// 使用变量字典渲染模板。未找到的占位符按 null 处理，并替换为空字符串。
+    /// 使用变量字典渲染模板。
     /// </summary>
-    public static string Render(string? template, IReadOnlyDictionary<string, JsonNode?>? values)
+    public static string Render(
+        string? template,
+        IReadOnlyDictionary<string, JsonNode?>? values,
+        MissingTemplateValueBehavior missingValueBehavior = MissingTemplateValueBehavior.Empty)
     {
         if (string.IsNullOrEmpty(template))
         {
             return string.Empty;
         }
 
-        return PlaceholderRegex.Replace(template!, match =>
+        return PlaceholderRegex.Replace(template, match =>
         {
             var path = match.Groups["path"].Value.Trim();
-            return TryResolveValue(path, values, out var value)
-                ? FormatValue(value)
-                : string.Empty;
+            if (TryResolveValue(path, values, out var value))
+            {
+                return FormatValue(value);
+            }
+
+            return missingValueBehavior switch
+            {
+                MissingTemplateValueBehavior.Empty => string.Empty,
+                MissingTemplateValueBehavior.PreservePlaceholder => match.Value,
+                MissingTemplateValueBehavior.Throw => throw new KeyNotFoundException($"系统提示模板变量不存在：{path}"),
+                _ => throw new ArgumentOutOfRangeException(nameof(missingValueBehavior)),
+            };
         });
     }
 
-    /// <summary>
-    /// 使用 <see cref="AgentOptions.SystemPromptTemplate"/> 和 <see cref="AgentOptions.SystemPromptTemplateDic"/> 渲染系统提示。
-    /// </summary>
-    public static string Render(AgentOptions? options)
+    internal static string Render(AgentOptions options)
     {
-        return options is null
-            ? string.Empty
-            : Render(options.SystemPromptTemplate, options.SystemPromptTemplateDic);
+        return Render(
+            options.SystemPromptTemplate,
+            options.SystemPromptTemplateValues,
+            options.MissingTemplateValueBehavior);
     }
 
     private static bool TryResolveValue(
@@ -58,16 +83,16 @@ public static class SystemPromptTemplateEngine
             return true;
         }
 
-        var parts = path.Split('.');
-        if (parts.Length == 0 || !values.TryGetValue(parts[0], out value))
+        var parts = path.Split('.').Select(static part => part.Trim()).ToArray();
+        if (parts.Length == 0 || parts.Any(static part => part.Length == 0) || !values.TryGetValue(parts[0], out value))
         {
             value = null;
             return false;
         }
 
-        for (var i = 1; i < parts.Length; i++)
+        for (var index = 1; index < parts.Length; index++)
         {
-            if (value is not JsonObject jsonObject || !jsonObject.TryGetPropertyValue(parts[i], out value))
+            if (value is not JsonObject jsonObject || !jsonObject.TryGetPropertyValue(parts[index], out value))
             {
                 value = null;
                 return false;
