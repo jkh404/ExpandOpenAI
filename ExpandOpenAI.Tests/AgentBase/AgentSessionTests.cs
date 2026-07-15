@@ -1,4 +1,4 @@
-using ExpandOpenAI.AgentBase;
+using ExpandOpenAI.AgentFramework;
 using Microsoft.Extensions.AI;
 
 namespace ExpandOpenAI.Tests.AgentBase;
@@ -17,7 +17,7 @@ public sealed class AgentSessionTests
                 return Task.FromResult(Response("hello"));
             },
         };
-        var agent = new AIAgent(client, new AgentOptions
+        AIAgent agent = new DefaultAIAgent(client, new AgentOptions
         {
             SystemPromptTemplate = "You are helpful.",
         });
@@ -44,7 +44,7 @@ public sealed class AgentSessionTests
         {
             ResponseHandler = (_, _, _) => throw new InvalidOperationException("request failed"),
         };
-        var session = new AIAgent(client, new AgentOptions
+        IAgentSession session = new DefaultAIAgent(client, new AgentOptions
         {
             SystemPromptTemplate = "system",
         }).CreateSession();
@@ -73,7 +73,7 @@ public sealed class AgentSessionTests
                 return Task.FromResult(Response("done"));
             },
         };
-        var agent = new AIAgent(client, new AgentOptions
+        AIAgent agent = new DefaultAIAgent(client, new AgentOptions
         {
             SystemPromptTemplate = "system",
             TokenCompressor = compressor,
@@ -89,12 +89,35 @@ public sealed class AgentSessionTests
 
         Assert.Equal(2, callCount);
         Assert.Equal(1, compressor.CallCount);
+        Assert.DoesNotContain(
+            compressor.LastContext!.Messages,
+            message => message.Role == ChatRole.System);
         Assert.Collection(
             session.History,
             message => AssertMessage(message, ChatRole.System, "system"),
+            message => AssertMessage(message, ChatRole.System, "old system"),
             message => AssertMessage(message, ChatRole.Assistant, "summary"),
             message => AssertMessage(message, ChatRole.User, "new question"),
             message => AssertMessage(message, ChatRole.Assistant, "done"));
+    }
+
+    [Fact]
+    public async Task RunAsync_DoesNotDuplicateConfiguredSystemPromptAcrossRuns()
+    {
+        using var client = new TestChatClient
+        {
+            ResponseHandler = (_, _, _) => Task.FromResult(Response("done")),
+        };
+        IAgentSession session = new DefaultAIAgent(client, new AgentOptions
+        {
+            SystemPromptTemplate = "system",
+        }).CreateSession();
+
+        await session.RunAsync("first");
+        await session.RunAsync("second");
+
+        Assert.Single(session.History, message => message.Role == ChatRole.System);
+        AssertMessage(session.History[0], ChatRole.System, "system");
     }
 
     [Fact]
@@ -106,7 +129,7 @@ public sealed class AgentSessionTests
         {
             ResponseHandler = (_, _, _) => throw new InvalidOperationException("context_length_exceeded"),
         };
-        var session = new AIAgent(client, new AgentOptions
+        IAgentSession session = new DefaultAIAgent(client, new AgentOptions
         {
             SystemPromptTemplate = "system",
             TokenCompressor = compressor,
@@ -134,7 +157,7 @@ public sealed class AgentSessionTests
             ResponseHandler = (_, _, _) => Task.FromResult(Response("after stream")),
             StreamingHandler = StreamTwoUpdates,
         };
-        var session = new AIAgent(client, new AgentOptions()).CreateSession();
+        IAgentSession session = new DefaultAIAgent(client, new AgentOptions()).CreateSession();
 
         await using (var enumerator = session.RunStreamAsync("hi").GetAsyncEnumerator())
         {
@@ -162,7 +185,7 @@ public sealed class AgentSessionTests
                 return Response("unreachable");
             },
         };
-        var session = new AIAgent(client, new AgentOptions()).CreateSession();
+        IAgentSession session = new DefaultAIAgent(client, new AgentOptions()).CreateSession();
         using var cancellation = new CancellationTokenSource();
         cancellation.Cancel();
 
@@ -184,7 +207,7 @@ public sealed class AgentSessionTests
                 return Response("done");
             },
         };
-        var session = new AIAgent(client).CreateSession();
+        IAgentSession session = new DefaultAIAgent(client).CreateSession();
 
         var firstRun = session.RunAsync("first");
         await requestStarted.Task;
@@ -207,7 +230,7 @@ public sealed class AgentSessionTests
                 return Task.FromResult(Response("private answer"));
             },
         };
-        var session = new AIAgent(client, new AgentOptions
+        IAgentSession session = new DefaultAIAgent(client, new AgentOptions
         {
             MessageHandler = new RedactingMessageHandler(),
         }).CreateSession();
@@ -231,7 +254,7 @@ public sealed class AgentSessionTests
                 return Task.FromResult(Response("done"));
             },
         };
-        var session = new AIAgent(client, new AgentOptions
+        IAgentSession session = new DefaultAIAgent(client, new AgentOptions
         {
             DefaultChatOptions = new ChatOptions
             {
@@ -273,7 +296,7 @@ public sealed class AgentSessionTests
                         new Dictionary<string, object?> { ["value"] = "hello" })])));
             },
         };
-        var session = new AIAgent(client, new AgentOptions
+        IAgentSession session = new DefaultAIAgent(client, new AgentOptions
         {
             DefaultChatOptions = new ChatOptions
             {
@@ -291,6 +314,98 @@ public sealed class AgentSessionTests
 
         Assert.Equal("tool complete", response.Text);
         Assert.Equal(1, toolExecutions);
+    }
+
+    [Fact]
+    public async Task RunAsync_RecoversRawJsonAndNormalizesToolArgumentNames()
+    {
+        string? receivedPath = null;
+        var function = AIFunctionFactory.Create(
+            (string relativePath) =>
+            {
+                receivedPath = relativePath;
+                return "written";
+            },
+            "write_workspace_file");
+        using var client = new TestChatClient
+        {
+            ResponseHandler = (messages, _, _) =>
+            {
+                if (messages.SelectMany(static message => message.Contents).OfType<FunctionResultContent>().Any())
+                {
+                    return Task.FromResult(Response("tool complete"));
+                }
+
+                return Task.FromResult(new ChatResponse(new ChatMessage(
+                    ChatRole.Assistant,
+                    [new FunctionCallContent(
+                        "call-raw",
+                        "write_workspace_file",
+                        new Dictionary<string, object?>
+                        {
+                            ["$raw"] = "{\"relative_path\":\"chapters/chapter-01.md\"}",
+                        })])));
+            },
+        };
+        var session = new DefaultAIAgent(client, new AgentOptions
+        {
+            DefaultChatOptions = new ChatOptions { Tools = [function] },
+            ToolApprovalAsync = static (_, _) => new ValueTask<bool>(true),
+        }).CreateSession();
+
+        var response = await session.RunAsync("write chapter");
+
+        Assert.Equal("tool complete", response.Text);
+        Assert.Equal("chapters/chapter-01.md", receivedPath);
+    }
+
+    [Fact]
+    public async Task RunAsync_ReturnsActionableResultForTruncatedRawToolArguments()
+    {
+        var toolExecutions = 0;
+        var toolResult = string.Empty;
+        var function = AIFunctionFactory.Create(
+            (string relativePath) =>
+            {
+                toolExecutions++;
+                return relativePath;
+            },
+            "write_workspace_file");
+        using var client = new TestChatClient
+        {
+            ResponseHandler = (messages, _, _) =>
+            {
+                var result = messages.SelectMany(static message => message.Contents)
+                    .OfType<FunctionResultContent>()
+                    .LastOrDefault();
+                if (result is not null)
+                {
+                    toolResult = result.Result?.ToString() ?? result.Exception?.Message ?? string.Empty;
+                    return Task.FromResult(Response("tool arguments rejected"));
+                }
+
+                return Task.FromResult(new ChatResponse(new ChatMessage(
+                    ChatRole.Assistant,
+                    [new FunctionCallContent(
+                        "call-truncated",
+                        "write_workspace_file",
+                        new Dictionary<string, object?>
+                        {
+                            ["$raw"] = "{\"relativePath\":\"chapter.md\",\"content\":\"unfinished",
+                        })])));
+            },
+        };
+        var session = new DefaultAIAgent(client, new AgentOptions
+        {
+            DefaultChatOptions = new ChatOptions { Tools = [function] },
+            ToolApprovalAsync = static (_, _) => new ValueTask<bool>(true),
+        }).CreateSession();
+
+        await session.RunAsync("write chapter");
+
+        Assert.Equal(0, toolExecutions);
+        Assert.Contains("JSON", toolResult, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("重试", toolResult, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -325,7 +440,7 @@ public sealed class AgentSessionTests
                 throw new InvalidOperationException("context_length_exceeded");
             },
         };
-        var session = new AIAgent(client, new AgentOptions
+        IAgentSession session = new DefaultAIAgent(client, new AgentOptions
         {
             TokenCompressor = compressor,
             DefaultChatOptions = new ChatOptions
@@ -348,6 +463,35 @@ public sealed class AgentSessionTests
             session.History,
             message => AssertMessage(message, ChatRole.User, "old question"),
             message => AssertMessage(message, ChatRole.Assistant, "old answer"));
+    }
+
+    [Fact]
+    public async Task AbstractAgent_CanReturnCustomSessionImplementation()
+    {
+        using var client = new TestChatClient();
+        AIAgent agent = new CustomAgent(client);
+
+        IAgentSession session = agent.CreateSession();
+        var response = await session.RunAsync("hello");
+
+        Assert.IsType<CustomAgentSession>(session);
+        Assert.Equal("custom: hello", response.Text);
+    }
+
+    [Fact]
+    public void AgentOptionsClone_PreservesDerivedOptions()
+    {
+        AgentOptions options = new CustomAgentOptions
+        {
+            Marker = "custom",
+            SystemPromptTemplate = "system",
+        };
+
+        var clone = Assert.IsType<CustomAgentOptions>(options.Clone());
+
+        Assert.NotSame(options, clone);
+        Assert.Equal("custom", clone.Marker);
+        Assert.Equal("system", clone.SystemPromptTemplate);
     }
 
     private static async IAsyncEnumerable<ChatResponseUpdate> StreamTwoUpdates(
@@ -398,5 +542,97 @@ public sealed class AgentSessionTests
             cancellationToken.ThrowIfCancellationRequested();
             return new ValueTask<ChatMessage?>(new ChatMessage(ChatRole.Assistant, "history answer"));
         }
+    }
+
+    private sealed class CustomAgent : AIAgent
+    {
+        public CustomAgent(IChatClient chatClient)
+            : base(chatClient)
+        {
+        }
+
+        public override IAgentSession CreateSession(IEnumerable<ChatMessage>? initialHistory = null)
+        {
+            return new CustomAgentSession(initialHistory);
+        }
+    }
+
+    private sealed class CustomAgentSession : IAgentSession
+    {
+        private readonly List<ChatMessage> _history;
+
+        public CustomAgentSession(IEnumerable<ChatMessage>? initialHistory)
+        {
+            _history = initialHistory?.ToList() ?? [];
+        }
+
+        public IReadOnlyList<ChatMessage> History => _history.AsReadOnly();
+
+        public void ClearHistory() => _history.Clear();
+
+        public ValueTask ClearMemoryAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return default;
+        }
+
+        public ValueTask DestroyAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            _history.Clear();
+            return default;
+        }
+
+        public Task<ChatResponse> RunAsync(
+            string message,
+            ChatOptions? chatOptions = null,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(Response($"custom: {message}"));
+        }
+
+        public Task<ChatResponse> RunAsync(
+            ChatMessage userMessage,
+            ChatOptions? chatOptions = null,
+            CancellationToken cancellationToken = default)
+        {
+            return RunAsync(userMessage.Text, chatOptions, cancellationToken);
+        }
+
+        public async IAsyncEnumerable<ChatResponseUpdate> RunStreamAsync(
+            string message,
+            ChatOptions? chatOptions = null,
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            await Task.Yield();
+            cancellationToken.ThrowIfCancellationRequested();
+            yield return new ChatResponseUpdate(ChatRole.Assistant, $"custom: {message}");
+        }
+
+        public IAsyncEnumerable<ChatResponseUpdate> RunStreamAsync(
+            ChatMessage userMessage,
+            ChatOptions? chatOptions = null,
+            CancellationToken cancellationToken = default)
+        {
+            return RunStreamAsync(userMessage.Text, chatOptions, cancellationToken);
+        }
+    }
+
+    private sealed class CustomAgentOptions : AgentOptions
+    {
+        public CustomAgentOptions()
+        {
+        }
+
+        private CustomAgentOptions(CustomAgentOptions other)
+            : base(other)
+        {
+            Marker = other.Marker;
+        }
+
+        public string Marker { get; init; } = string.Empty;
+
+        public override AgentOptions Clone() => new CustomAgentOptions(this);
     }
 }

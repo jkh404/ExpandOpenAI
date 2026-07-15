@@ -1,6 +1,6 @@
 using Microsoft.Extensions.AI;
 
-namespace ExpandOpenAI.AgentBase;
+namespace ExpandOpenAI.AgentFramework;
 
 /// <summary>
 /// 处理消息进入模型和会话历史前的转换。

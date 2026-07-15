@@ -1,5 +1,5 @@
 using System.Runtime.CompilerServices;
-using ExpandOpenAI.AgentBase;
+using ExpandOpenAI.AgentFramework;
 using Microsoft.Extensions.AI;
 
 namespace ExpandOpenAI.Tests.AgentBase;
@@ -49,17 +49,32 @@ internal sealed class TestChatClient : IChatClient
     }
 }
 
-internal sealed class TestTokenCompressor(IReadOnlyList<ChatMessage> result) : ITokenCompressor
+internal sealed class TestTokenCompressor(
+    IReadOnlyList<ChatMessage> result,
+    bool shouldCompress = false,
+    IReadOnlyList<MemoryEntry>? sessionMemories = null,
+    IReadOnlyList<MemoryEntry>? globalMemories = null) : ITokenCompressor
 {
     public int CallCount { get; private set; }
 
-    public ValueTask<IReadOnlyList<ChatMessage>> CompressAsync(
-        IReadOnlyList<ChatMessage> messages,
+    public TokenCompressionContext? LastContext { get; private set; }
+
+    public bool ShouldCompress(IReadOnlyList<ChatMessage> messages)
+    {
+        return shouldCompress;
+    }
+
+    public ValueTask<TokenCompressionResult> CompressAsync(
+        TokenCompressionContext context,
         IChatClient chatClient,
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
         CallCount++;
-        return new ValueTask<IReadOnlyList<ChatMessage>>(result);
+        LastContext = context;
+        return new ValueTask<TokenCompressionResult>(new TokenCompressionResult(
+            result,
+            sessionMemories,
+            globalMemories));
     }
 }

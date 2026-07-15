@@ -1,18 +1,18 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-	  <TargetFrameworks>netstandard2.0;netstandard2.1;net10.0</TargetFrameworks>
+    <TargetFrameworks>netstandard2.0;netstandard2.1;net10.0</TargetFrameworks>
     <LangVersion>14.0</LangVersion>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <IsPackable>true</IsPackable>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <NoWarn>$(NoWarn);CS1591</NoWarn>
-    <PackageId>ExpandOpenAI</PackageId>
-    <Title>ExpandOpenAI</Title>
+    <PackageId>ExpandOpenAI.AgentFramework</PackageId>
+    <Title>ExpandOpenAI.AgentFramework</Title>
     <Authors>jkh404</Authors>
-    <Description>OpenAI-compatible Chat Completions, Responses API, embedding, and reranking implementations with streaming, tool calling, multimodal input, and flexible request extensions.</Description>
-    <PackageTags>OpenAI;Responses API;AI;Microsoft.Extensions.AI;ChatClient;Embeddings;Vector;Rerank;Reranking;DashScope;Multimodal</PackageTags>
+    <Description>Infrastructure abstractions and default implementations for ExpandOpenAI agents, sessions, layered memory, and round-based history compression.</Description>
+    <PackageTags>OpenAI;Agent Framework;AI;Agents;Memory;Token Compression;ExpandOpenAI</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageProjectUrl>https://github.com/jkh404/ExpandOpenAI</PackageProjectUrl>
@@ -22,7 +22,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.Extensions.AI" Version="10.8.0" />
+    <ProjectReference Include="..\ExpandOpenAI\ExpandOpenAI.csproj" />
   </ItemGroup>
 
   <ItemGroup>

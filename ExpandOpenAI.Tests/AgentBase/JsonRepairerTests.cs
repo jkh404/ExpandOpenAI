@@ -1,5 +1,4 @@
 using ExpandOpenAI;
-using ExpandOpenAI.AgentBase;
 using Microsoft.Extensions.AI;
 
 namespace ExpandOpenAI.Tests.AgentBase;

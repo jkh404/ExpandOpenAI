@@ -1,4 +1,6 @@
 <Solution>
+  <Project Path="ExpandOpenAI.AgentFramework.Demo/ExpandOpenAI.AgentFramework.Demo.csproj" />
+  <Project Path="ExpandOpenAI.AgentFramework/ExpandOpenAI.AgentFramework.csproj" />
   <Project Path="ExpandOpenAI.Tests/ExpandOpenAI.Tests.csproj" />
   <Project Path="ExpandOpenAI.TestConsole/ExpandOpenAI.TestConsole.csproj" />
   <Project Path="ExpandVectorStore.Qdrant/ExpandVectorStore.Qdrant.csproj" Id="bc0902ee-e866-46fb-b706-9b0e48b0783b" />

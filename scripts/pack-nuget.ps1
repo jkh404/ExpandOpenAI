@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet("All", "ExpandOpenAI", "ExpandVectorStore.Qdrant")]
+    [ValidateSet("All", "ExpandOpenAI", "ExpandOpenAI.AgentFramework", "ExpandVectorStore.Qdrant")]
     [string]$Package = "All",
     [string]$Version,
     [string]$Configuration = "Release",
@@ -17,6 +17,7 @@ $repoRoot = (Resolve-Path (Join-Path $scriptDir "..")).Path
 
 $packageProjects = [ordered]@{
     "ExpandOpenAI" = "ExpandOpenAI\ExpandOpenAI.csproj"
+    "ExpandOpenAI.AgentFramework" = "ExpandOpenAI.AgentFramework\ExpandOpenAI.AgentFramework.csproj"
     "ExpandVectorStore.Qdrant" = "ExpandVectorStore.Qdrant\ExpandVectorStore.Qdrant.csproj"
 }
 

@@ -21,7 +21,6 @@
 - 支持通过 `OpenAIRequestContent` 扩展自定义内容片段
 - 支持环境变量初始化和代码配置初始化
 - 支持自定义请求头、认证头、请求体扩展字段和请求钩子
-- 提供带独立会话历史、上下文压缩和工具审批的轻量 Agent
 
 ## 项目结构
 
@@ -135,6 +134,17 @@ var next = await client.GetResponseAsync(
 标准 OpenAI Responses API 不允许同时设置 `PreviousResponseId` 和 `Conversation`，客户端会在构造请求时检查这一冲突。
 
 响应中的 `message`、`reasoning`、`function_call` 和 `function_call_output` 会映射为对应的 `Microsoft.Extensions.AI` 内容类型。尚未内置映射的工具 Item 或第三方 Item 会保留为 `OpenAIResponsesRawContent`；该对象可随消息再次发送，以完整保留未知 JSON 字段。
+
+Responses 客户端同样支持流式调用；`response.output_text.delta` 等服务端事件会被统一转换为 `ChatResponseUpdate`：
+
+```csharp
+await foreach (var update in client.GetStreamingResponseAsync("请流式介绍 Responses API。"))
+{
+    Console.Write(update.Text);
+}
+```
+
+流式函数调用的参数会在服务端增量事件中累计，完成后只产生一个 `FunctionCallContent`，可以继续按 `IChatClient` 的常规工具调用流程处理。
 
 ### 流式输出
 
@@ -533,76 +543,7 @@ await foreach (var update in client.GetStreamingResponseAsync([message]))
 
 Responses 客户端使用扁平的 function tool 结构，并把 `function_call` / `function_call_output` 作为顶层 Item 处理；流式函数参数会在 `response.function_call_arguments.*` 事件中累计，完成后只输出一次 `FunctionCallContent`。
 
-## Agent 会话
-
-`AIAgent` 保存可复用的客户端和稳定配置，`AgentSession` 保存一段独立对话的历史。一个 Agent 可以创建多个互不影响的会话：
-
-```csharp
-using System.Text.Json.Nodes;
-using ExpandOpenAI.AgentBase;
-using Microsoft.Extensions.AI;
-
-var promptValues = new DynamicConcurrentDictionary
-{
-    ["assistantName"] = JsonValue.Create("Expand Assistant"),
-};
-
-var agent = new AIAgent(client, new AgentOptions
-{
-    SystemPromptTemplate = "你的名字是 {{assistantName}}。",
-    SystemPromptTemplateValues = promptValues,
-    MissingTemplateValueBehavior = MissingTemplateValueBehavior.Throw,
-    DefaultChatOptions = new ChatOptions
-    {
-        Temperature = 0.2f,
-    },
-});
-
-var session = agent.CreateSession();
-var response = await session.RunAsync(
-    "介绍一下你自己。",
-    cancellationToken: cancellationToken);
-
-Console.WriteLine(response.Text);
-```
-
-流式调用只有在完整枚举结束后才提交历史；调用方提前停止枚举时，不会把部分响应写入会话：
-
-```csharp
-await foreach (var update in session.RunStreamAsync(
-    "流式回答。",
-    cancellationToken: cancellationToken))
-{
-    Console.Write(update.Text);
-}
-```
-
-需要并行处理多段对话时，应创建多个 `AgentSession`。同一个会话不允许并发运行，避免历史消息交叉污染。
-
-单次 `RunAsync` 或 `RunStreamAsync` 传入的 `ChatOptions` 会替换 `DefaultChatOptions`；无论使用哪一种，发送前都会创建独立副本，避免底层客户端修改共享配置。
-
-Agent 层只处理“上下文超限后压缩一次再重试”这种语义恢复。HTTP 超时、429 和 5xx 等传输重试应配置在底层 `IChatClient` 或 HTTP resilience 管线中，避免包含工具副作用的整轮对话被重复执行。
-
-工具执行默认拒绝。启用本地工具时，应使用异步审批委托检查函数名和实际参数：
-
-```csharp
-var agent = new AIAgent(client, new AgentOptions
-{
-    DefaultChatOptions = new ChatOptions
-    {
-        Tools = [myFunction],
-    },
-    ToolApprovalAsync = (context, cancellationToken) =>
-    {
-        var approved = context.Function.Name == "safe_function";
-        return new ValueTask<bool>(approved);
-    },
-});
-```
-
-历史压缩器实现 `ITokenCompressor`。压缩输入不包含系统提示，返回结果同样不能包含 `System` 消息；压缩结果只会在本轮模型调用成功后提交到会话历史。
-
-### JSON 修复
+## JSON 修复
 
 JSON 修复是独立功能，不参与 Agent 历史和工具流程：
 

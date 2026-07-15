@@ -2,7 +2,7 @@ using System.Globalization;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 
-namespace ExpandOpenAI.AgentBase;
+namespace ExpandOpenAI.AgentFramework;
 
 /// <summary>
 /// 模板变量缺失时的处理方式。

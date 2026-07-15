@@ -1,23 +1,27 @@
 using System.Collections.ObjectModel;
 using System.Runtime.CompilerServices;
+using System.Text.Json;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging.Abstractions;
 
-namespace ExpandOpenAI.AgentBase;
+namespace ExpandOpenAI.AgentFramework;
 
 /// <summary>
 /// 一段独立的 Agent 对话会话。单个会话不允许并发运行。
 /// </summary>
-public sealed class AgentSession
+public sealed class AgentSession : IAgentSession
 {
     private readonly AIAgent _agent;
+    private readonly AgentMemory _memory;
     private readonly List<ChatMessage> _history;
     private readonly object _historySync = new object();
     private readonly SemaphoreSlim _runGate = new SemaphoreSlim(1, 1);
+    private int _destroyed;
 
     internal AgentSession(AIAgent agent, IEnumerable<ChatMessage>? initialHistory)
     {
         _agent = agent;
+        _memory = new AgentMemory(agent.Options);
         _history = initialHistory is null
             ? new List<ChatMessage>()
             : CloneMessages(initialHistory);
@@ -30,6 +34,7 @@ public sealed class AgentSession
     {
         get
         {
+            ThrowIfDestroyed();
             lock (_historySync)
             {
                 return new ReadOnlyCollection<ChatMessage>(CloneMessages(_history));
@@ -42,6 +47,7 @@ public sealed class AgentSession
     /// </summary>
     public void ClearHistory()
     {
+        ThrowIfDestroyed();
         if (!_runGate.Wait(0))
         {
             throw new InvalidOperationException("AgentSession 正在运行，不能清空历史。");
@@ -49,10 +55,69 @@ public sealed class AgentSession
 
         try
         {
+            ThrowIfDestroyed();
             lock (_historySync)
             {
                 _history.Clear();
             }
+        }
+        finally
+        {
+            _runGate.Release();
+        }
+    }
+
+    /// <summary>
+    /// 清空当前会话层记忆，不影响全局记忆。
+    /// </summary>
+    public async ValueTask ClearMemoryAsync(CancellationToken cancellationToken = default)
+    {
+        ThrowIfDestroyed();
+        if (!await _runGate.WaitAsync(0, cancellationToken).ConfigureAwait(false))
+        {
+            throw new InvalidOperationException("AgentSession 正在运行，不能清空会话记忆。");
+        }
+
+        try
+        {
+            ThrowIfDestroyed();
+            await _memory.ClearSessionAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _runGate.Release();
+        }
+    }
+
+    /// <summary>
+    /// 销毁当前会话，清空历史和会话层记忆。
+    /// </summary>
+    public async ValueTask DestroyAsync(CancellationToken cancellationToken = default)
+    {
+        if (Volatile.Read(ref _destroyed) != 0)
+        {
+            return;
+        }
+
+        if (!await _runGate.WaitAsync(0, cancellationToken).ConfigureAwait(false))
+        {
+            throw new InvalidOperationException("AgentSession 正在运行，不能销毁会话。");
+        }
+
+        try
+        {
+            if (Volatile.Read(ref _destroyed) != 0)
+            {
+                return;
+            }
+
+            await _memory.ClearSessionAsync(cancellationToken).ConfigureAwait(false);
+            lock (_historySync)
+            {
+                _history.Clear();
+            }
+
+            Volatile.Write(ref _destroyed, 1);
         }
         finally
         {
@@ -103,7 +168,7 @@ public sealed class AgentSession
 
             while (true)
             {
-                var effectiveOptions = _agent.Options.CreateChatOptions(chatOptions);
+                var effectiveOptions = CreateEffectiveChatOptions(chatOptions);
                 var toolTracker = new ToolInvocationTracker();
                 var effectiveClient = CreateEffectiveChatClient(effectiveOptions, toolTracker);
                 var preparedMessages = BuildPreparedMessages(attemptHistory, runContext.ModelUserMessage);
@@ -129,7 +194,10 @@ public sealed class AgentSession
                     && CanForceCompress(attemptHistory, exception))
                 {
                     contextLengthRetried = true;
-                    attemptHistory = await CompressHistoryAsync(attemptHistory, cancellationToken).ConfigureAwait(false);
+                    attemptHistory = await CompressHistoryAsync(
+                        attemptHistory,
+                        TokenCompressionReason.ContextLengthExceeded,
+                        cancellationToken).ConfigureAwait(false);
                 }
             }
         }
@@ -182,7 +250,7 @@ public sealed class AgentSession
 
             while (true)
             {
-                var effectiveOptions = _agent.Options.CreateChatOptions(chatOptions);
+                var effectiveOptions = CreateEffectiveChatOptions(chatOptions);
                 var toolTracker = new ToolInvocationTracker();
                 var effectiveClient = CreateEffectiveChatClient(effectiveOptions, toolTracker);
                 var preparedMessages = BuildPreparedMessages(attemptHistory, runContext.ModelUserMessage);
@@ -214,7 +282,10 @@ public sealed class AgentSession
                         && CanForceCompress(attemptHistory, exception))
                     {
                         contextLengthRetried = true;
-                        attemptHistory = await CompressHistoryAsync(attemptHistory, cancellationToken).ConfigureAwait(false);
+                        attemptHistory = await CompressHistoryAsync(
+                            attemptHistory,
+                            TokenCompressionReason.ContextLengthExceeded,
+                            cancellationToken).ConfigureAwait(false);
                         retry = true;
                         break;
                     }
@@ -245,9 +316,16 @@ public sealed class AgentSession
 
     private async Task EnterRunAsync(CancellationToken cancellationToken)
     {
+        ThrowIfDestroyed();
         if (!await _runGate.WaitAsync(0, cancellationToken).ConfigureAwait(false))
         {
             throw new InvalidOperationException("同一个 AgentSession 不支持并发运行。请为并发对话创建独立会话。");
+        }
+
+        if (Volatile.Read(ref _destroyed) != 0)
+        {
+            _runGate.Release();
+            ThrowIfDestroyed();
         }
     }
 
@@ -298,9 +376,10 @@ public sealed class AgentSession
             history = CloneMessages(_history);
         }
 
-        history.RemoveAll(static message => message.Role == ChatRole.System);
-
-        if (systemPromptMessage is not null)
+        if (systemPromptMessage is not null
+            && !history.Any(message =>
+                message.Role == ChatRole.System
+                && string.Equals(message.Text, systemPromptMessage.Text, StringComparison.Ordinal)))
         {
             history.Insert(0, CloneMessage(systemPromptMessage));
         }
@@ -314,34 +393,51 @@ public sealed class AgentSession
         CancellationToken cancellationToken)
     {
         var shouldCompress = _agent.Options.ShouldCompressMessages;
-        if (shouldCompress is null || _agent.Options.TokenCompressor is null || !HasCompressibleHistory(attemptHistory))
+        var compressor = _agent.Options.TokenCompressor;
+        if (compressor is null || !HasCompressibleHistory(attemptHistory))
         {
             return attemptHistory;
         }
 
         var candidateMessages = BuildPreparedMessages(attemptHistory, modelUserMessage);
-        if (!shouldCompress(new ReadOnlyCollection<ChatMessage>(CloneMessages(candidateMessages))))
+        var historyWithoutSystem = attemptHistory
+            .Where(static message => message.Role != ChatRole.System)
+            .Select(CloneMessage)
+            .ToList()
+            .AsReadOnly();
+        var compressionRequired = shouldCompress is null
+            ? compressor.ShouldCompress(historyWithoutSystem)
+            : shouldCompress(new ReadOnlyCollection<ChatMessage>(CloneMessages(candidateMessages)));
+
+        if (!compressionRequired)
         {
             return attemptHistory;
         }
 
-        return await CompressHistoryAsync(attemptHistory, cancellationToken).ConfigureAwait(false);
+        return await CompressHistoryAsync(
+            attemptHistory,
+            TokenCompressionReason.Configured,
+            cancellationToken).ConfigureAwait(false);
     }
 
     private async Task<List<ChatMessage>> CompressHistoryAsync(
         List<ChatMessage> attemptHistory,
+        TokenCompressionReason reason,
         CancellationToken cancellationToken)
     {
         var compressor = _agent.Options.TokenCompressor
             ?? throw new InvalidOperationException("未配置 TokenCompressor，无法压缩历史。");
-        var systemPrompt = attemptHistory.FirstOrDefault(static message => message.Role == ChatRole.System);
+        var systemMessages = attemptHistory
+            .Where(static message => message.Role == ChatRole.System)
+            .Select(CloneMessage)
+            .ToList();
         var messagesToCompress = attemptHistory
             .Where(static message => message.Role != ChatRole.System)
             .Select(CloneMessage)
             .ToList()
             .AsReadOnly();
         var compressed = await compressor.CompressAsync(
-            messagesToCompress,
+            new TokenCompressionContext(messagesToCompress, reason),
             _agent.ChatClient,
             cancellationToken).ConfigureAwait(false);
 
@@ -350,18 +446,26 @@ public sealed class AgentSession
             throw new InvalidOperationException("ITokenCompressor.CompressAsync 不能返回 null。");
         }
 
-        if (compressed.Any(static message => message.Role == ChatRole.System))
+        if (compressed.Messages is null)
+        {
+            throw new InvalidOperationException("ITokenCompressor 返回的 Messages 不能为 null。");
+        }
+
+        if (compressed.Messages.Any(static message => message is null))
+        {
+            throw new InvalidOperationException("ITokenCompressor 返回的 Messages 不能包含 null。");
+        }
+
+        if (compressed.Messages.Any(static message => message.Role == ChatRole.System))
         {
             throw new InvalidOperationException("ITokenCompressor 返回的结果不能包含 System 消息。");
         }
 
-        var result = new List<ChatMessage>(compressed.Count + (systemPrompt is null ? 0 : 1));
-        if (systemPrompt is not null)
-        {
-            result.Add(CloneMessage(systemPrompt));
-        }
+        await _memory.StoreAsync(compressed, cancellationToken).ConfigureAwait(false);
 
-        result.AddRange(CloneMessages(compressed));
+        var result = new List<ChatMessage>(compressed.Messages.Count + systemMessages.Count);
+        result.AddRange(systemMessages);
+        result.AddRange(CloneMessages(compressed.Messages));
         return result;
     }
 
@@ -434,8 +538,21 @@ public sealed class AgentSession
 
         return new FunctionInvokingChatClient(_agent.ChatClient, NullLoggerFactory.Instance, null)
         {
+            IncludeDetailedErrors = true,
             FunctionInvoker = async (context, cancellationToken) =>
             {
+                if (!TryNormalizeFunctionArguments(context.Function, context.Arguments, out var argumentError))
+                {
+                    return argumentError;
+                }
+
+                if (ReferenceEquals(context.Function, _memory.RecallTool))
+                {
+                    return await context.Function.InvokeAsync(
+                        context.Arguments,
+                        cancellationToken).ConfigureAwait(false);
+                }
+
                 if (!await _agent.Options.ToolApprovalAsync(context, cancellationToken).ConfigureAwait(false))
                 {
                     return $"Tool '{context.Function.Name}' execution was denied by ToolApprovalAsync.";
@@ -445,6 +562,123 @@ public sealed class AgentSession
                 return await context.Function.InvokeAsync(context.Arguments, cancellationToken).ConfigureAwait(false);
             },
         };
+    }
+
+    private static bool TryNormalizeFunctionArguments(
+        AIFunction function,
+        AIFunctionArguments arguments,
+        out string? error)
+    {
+        error = null;
+        if (arguments.Count == 1 && arguments.TryGetValue("$raw", out var rawValue))
+        {
+            var raw = rawValue switch
+            {
+                string text => text,
+                JsonElement element when element.ValueKind == JsonValueKind.String => element.GetString(),
+                JsonElement element => element.GetRawText(),
+                _ => rawValue?.ToString(),
+            };
+            var extracted = JsonRepairer.ExtractJsonText(raw);
+            if (extracted is null)
+            {
+                error = "工具参数 JSON 无效或不完整，工具未执行。请缩短单次参数内容，确保 JSON 完整后重试。";
+                return false;
+            }
+
+            Dictionary<string, object?>? parsed;
+            try
+            {
+                parsed = JsonSerializer.Deserialize<Dictionary<string, object?>>(
+                    extracted,
+                    function.JsonSerializerOptions);
+            }
+            catch (JsonException)
+            {
+                error = "工具参数 JSON 无法解析，工具未执行。请检查参数名称、引号和转义后重试。";
+                return false;
+            }
+
+            arguments.Clear();
+            foreach (var pair in parsed ?? [])
+            {
+                arguments[pair.Key] = pair.Value;
+            }
+        }
+
+        NormalizeArgumentNames(function, arguments);
+        return true;
+    }
+
+    private static void NormalizeArgumentNames(AIFunction function, AIFunctionArguments arguments)
+    {
+        var schema = function.JsonSchema;
+        if (schema.ValueKind != JsonValueKind.Object
+            || !schema.TryGetProperty("properties", out var properties)
+            || properties.ValueKind != JsonValueKind.Object)
+        {
+            return;
+        }
+
+        var canonicalNames = properties.EnumerateObject()
+            .Select(static property => property.Name)
+            .ToList();
+        foreach (var suppliedName in arguments.Keys.ToList())
+        {
+            if (canonicalNames.Contains(suppliedName, StringComparer.Ordinal))
+            {
+                continue;
+            }
+
+            var normalizedSuppliedName = NormalizeArgumentName(suppliedName);
+            var canonicalName = canonicalNames.FirstOrDefault(name =>
+                string.Equals(
+                    NormalizeArgumentName(name),
+                    normalizedSuppliedName,
+                    StringComparison.Ordinal));
+            if (canonicalName is null || arguments.ContainsKey(canonicalName))
+            {
+                continue;
+            }
+
+            arguments[canonicalName] = arguments[suppliedName];
+            arguments.Remove(suppliedName);
+        }
+    }
+
+    private static string NormalizeArgumentName(string name)
+    {
+        return new string(name
+            .Where(static character => char.IsLetterOrDigit(character))
+            .Select(static character => char.ToLowerInvariant(character))
+            .ToArray());
+    }
+
+    private ChatOptions? CreateEffectiveChatOptions(ChatOptions? runOptions)
+    {
+        var options = _agent.Options.CreateChatOptions(runOptions);
+        if (!_agent.Options.EnableMemoryRecallTool)
+        {
+            return options;
+        }
+
+        options ??= new ChatOptions();
+        options.Tools ??= new List<AITool>();
+
+        var existing = options.Tools.FirstOrDefault(tool =>
+            string.Equals(tool.Name, _memory.RecallTool.Name, StringComparison.Ordinal));
+        if (existing is not null && !ReferenceEquals(existing, _memory.RecallTool))
+        {
+            throw new InvalidOperationException(
+                $"工具名称 '{_memory.RecallTool.Name}' 由 AgentFramework 内置记忆工具保留。");
+        }
+
+        if (existing is null)
+        {
+            options.Tools.Add(_memory.RecallTool);
+        }
+
+        return options;
     }
 
     private static List<ChatMessage> BuildPreparedMessages(
@@ -503,6 +737,14 @@ public sealed class AgentSession
             || message.Contains("上下文长度", StringComparison.OrdinalIgnoreCase)
             || message.Contains("超出上下文", StringComparison.OrdinalIgnoreCase)
             || message.Contains("超过上下文", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private void ThrowIfDestroyed()
+    {
+        if (Volatile.Read(ref _destroyed) != 0)
+        {
+            throw new ObjectDisposedException(nameof(AgentSession), "AgentSession 已被销毁。");
+        }
     }
 
     private sealed class ToolInvocationTracker

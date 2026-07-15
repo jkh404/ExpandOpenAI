@@ -2,7 +2,7 @@ using System.Collections;
 using System.Collections.Concurrent;
 using System.Text.Json.Nodes;
 
-namespace ExpandOpenAI.AgentBase;
+namespace ExpandOpenAI.AgentFramework;
 
 /// <summary>
 /// 支持静态值和按读取计算的动态值的线程安全字典。

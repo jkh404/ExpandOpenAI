@@ -1,5 +1,5 @@
 using System.Text.Json.Nodes;
-using ExpandOpenAI.AgentBase;
+using ExpandOpenAI.AgentFramework;
 
 namespace ExpandOpenAI.Tests.AgentBase;
 
