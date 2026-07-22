@@ -13,6 +13,7 @@ public sealed class AgentSession : IAgentSession
 {
     private readonly AIAgent _agent;
     private readonly AgentMemory _memory;
+    private readonly ContextCompactionTool _contextCompactionTool;
     private readonly List<ChatMessage> _history;
     private readonly object _historySync = new object();
     private readonly SemaphoreSlim _runGate = new SemaphoreSlim(1, 1);
@@ -22,6 +23,7 @@ public sealed class AgentSession : IAgentSession
     {
         _agent = agent;
         _memory = new AgentMemory(agent.Options);
+        _contextCompactionTool = new ContextCompactionTool();
         _history = initialHistory is null
             ? new List<ChatMessage>()
             : CloneMessages(initialHistory);
@@ -165,26 +167,50 @@ public sealed class AgentSession : IAgentSession
                 cancellationToken).ConfigureAwait(false);
 
             var contextLengthRetried = false;
+            var compactionTracker = new ContextCompactionTracker();
+            TokenCompressionResult? pendingModelRequestedMemory = null;
+            UsageDetails? usageBeforeCompaction = null;
+            var workingMessages = BuildPreparedMessages(attemptHistory, runContext.ModelUserMessage);
 
             while (true)
             {
-                var effectiveOptions = CreateEffectiveChatOptions(chatOptions);
+                var effectiveOptions = CreateEffectiveChatOptions(chatOptions, compactionTracker);
                 var toolTracker = new ToolInvocationTracker();
-                var effectiveClient = CreateEffectiveChatClient(effectiveOptions, toolTracker);
-                var preparedMessages = BuildPreparedMessages(attemptHistory, runContext.ModelUserMessage);
+                compactionTracker.BeginAttempt(workingMessages);
+                var effectiveClient = CreateEffectiveChatClient(
+                    effectiveOptions,
+                    toolTracker,
+                    compactionTracker);
 
                 try
                 {
                     var response = await effectiveClient.GetResponseAsync(
-                        preparedMessages,
+                        workingMessages,
                         effectiveOptions,
                         cancellationToken).ConfigureAwait(false);
 
+                    if (compactionTracker.PendingRequest is { } request)
+                    {
+                        usageBeforeCompaction = AddUsage(usageBeforeCompaction, response.Usage);
+                        var outcome = await ApplyModelRequestedCompactionAsync(
+                            request,
+                            cancellationToken).ConfigureAwait(false);
+                        workingMessages = outcome.Messages;
+                        pendingModelRequestedMemory = outcome.Compression;
+                        compactionTracker.MarkApplied();
+                        contextLengthRetried = true;
+                        continue;
+                    }
+
                     await CommitSuccessfulRunAsync(
-                        attemptHistory,
+                        workingMessages,
+                        runContext.ModelUserMessage,
                         runContext.HistoryUserMessage,
                         response.Messages,
+                        pendingModelRequestedMemory,
                         cancellationToken).ConfigureAwait(false);
+
+                    response.Usage = AddUsage(usageBeforeCompaction, response.Usage);
 
                     return response;
                 }
@@ -198,6 +224,7 @@ public sealed class AgentSession : IAgentSession
                         attemptHistory,
                         TokenCompressionReason.ContextLengthExceeded,
                         cancellationToken).ConfigureAwait(false);
+                    workingMessages = BuildPreparedMessages(attemptHistory, runContext.ModelUserMessage);
                 }
             }
         }
@@ -247,19 +274,25 @@ public sealed class AgentSession : IAgentSession
                 cancellationToken).ConfigureAwait(false);
 
             var contextLengthRetried = false;
+            var compactionTracker = new ContextCompactionTracker();
+            TokenCompressionResult? pendingModelRequestedMemory = null;
+            var workingMessages = BuildPreparedMessages(attemptHistory, runContext.ModelUserMessage);
 
             while (true)
             {
-                var effectiveOptions = CreateEffectiveChatOptions(chatOptions);
+                var effectiveOptions = CreateEffectiveChatOptions(chatOptions, compactionTracker);
                 var toolTracker = new ToolInvocationTracker();
-                var effectiveClient = CreateEffectiveChatClient(effectiveOptions, toolTracker);
-                var preparedMessages = BuildPreparedMessages(attemptHistory, runContext.ModelUserMessage);
-                var updates = new List<ChatResponseUpdate>();
+                compactionTracker.BeginAttempt(workingMessages);
+                var effectiveClient = CreateEffectiveChatClient(
+                    effectiveOptions,
+                    toolTracker,
+                    compactionTracker);
+                var historyUpdates = new List<ChatResponseUpdate>();
                 var hasYieldedUpdate = false;
                 var retry = false;
 
                 await using var enumerator = effectiveClient
-                    .GetStreamingResponseAsync(preparedMessages, effectiveOptions, cancellationToken)
+                    .GetStreamingResponseAsync(workingMessages, effectiveOptions, cancellationToken)
                     .GetAsyncEnumerator(cancellationToken);
 
                 while (true)
@@ -286,13 +319,21 @@ public sealed class AgentSession : IAgentSession
                             attemptHistory,
                             TokenCompressionReason.ContextLengthExceeded,
                             cancellationToken).ConfigureAwait(false);
+                        workingMessages = BuildPreparedMessages(attemptHistory, runContext.ModelUserMessage);
                         retry = true;
                         break;
                     }
 
+                    historyUpdates.Add(update);
+                    var visibleUpdate = compactionTracker.CreateVisibleUpdate(update);
+                    if (visibleUpdate is null)
+                    {
+                        continue;
+                    }
+
                     hasYieldedUpdate = true;
-                    updates.Add(update);
-                    yield return update;
+                    compactionTracker.ObserveVisibleUpdate(visibleUpdate);
+                    yield return visibleUpdate;
                 }
 
                 if (retry)
@@ -300,10 +341,24 @@ public sealed class AgentSession : IAgentSession
                     continue;
                 }
 
+                if (compactionTracker.PendingRequest is { } request)
+                {
+                    var outcome = await ApplyModelRequestedCompactionAsync(
+                        request,
+                        cancellationToken).ConfigureAwait(false);
+                    workingMessages = outcome.Messages;
+                    pendingModelRequestedMemory = outcome.Compression;
+                    compactionTracker.MarkApplied();
+                    contextLengthRetried = true;
+                    continue;
+                }
+
                 await CommitSuccessfulRunAsync(
-                    attemptHistory,
+                    workingMessages,
+                    runContext.ModelUserMessage,
                     runContext.HistoryUserMessage,
-                    updates.ToChatResponse().Messages,
+                    historyUpdates.ToChatResponse().Messages,
+                    pendingModelRequestedMemory,
                     cancellationToken).ConfigureAwait(false);
                 yield break;
             }
@@ -425,13 +480,26 @@ public sealed class AgentSession : IAgentSession
         TokenCompressionReason reason,
         CancellationToken cancellationToken)
     {
+        var outcome = await CompressMessagesAsync(
+            attemptHistory,
+            reason,
+            cancellationToken).ConfigureAwait(false);
+        await _memory.StoreAsync(outcome.Compression, cancellationToken).ConfigureAwait(false);
+        return outcome.Messages;
+    }
+
+    private async Task<CompressionOutcome> CompressMessagesAsync(
+        IReadOnlyList<ChatMessage> messages,
+        TokenCompressionReason reason,
+        CancellationToken cancellationToken)
+    {
         var compressor = _agent.Options.TokenCompressor
             ?? throw new InvalidOperationException("未配置 TokenCompressor，无法压缩历史。");
-        var systemMessages = attemptHistory
+        var systemMessages = messages
             .Where(static message => message.Role == ChatRole.System)
             .Select(CloneMessage)
             .ToList();
-        var messagesToCompress = attemptHistory
+        var messagesToCompress = messages
             .Where(static message => message.Role != ChatRole.System)
             .Select(CloneMessage)
             .ToList()
@@ -461,12 +529,98 @@ public sealed class AgentSession : IAgentSession
             throw new InvalidOperationException("ITokenCompressor 返回的结果不能包含 System 消息。");
         }
 
-        await _memory.StoreAsync(compressed, cancellationToken).ConfigureAwait(false);
-
         var result = new List<ChatMessage>(compressed.Messages.Count + systemMessages.Count);
         result.AddRange(systemMessages);
         result.AddRange(CloneMessages(compressed.Messages));
+        return new CompressionOutcome(result, compressed);
+    }
+
+    private async Task<CompressionOutcome> ApplyModelRequestedCompactionAsync(
+        ContextCompactionRequest request,
+        CancellationToken cancellationToken)
+    {
+        var messagesToCompress = RemoveContextCompactionCall(request);
+        var outcome = await CompressMessagesAsync(
+            messagesToCompress,
+            TokenCompressionReason.ModelRequested,
+            cancellationToken).ConfigureAwait(false);
+
+        EnsureUserMessagesWerePreserved(messagesToCompress, outcome.Messages);
+        outcome.Messages.Add(new ChatMessage(
+            ChatRole.Assistant,
+            [request.CallContent]));
+        outcome.Messages.Add(new ChatMessage(
+            ChatRole.Tool,
+            [new FunctionResultContent(
+                request.CallContent.CallId,
+                ContextCompactionToolResponse.AppliedRequest(request.Summary, request.Reason))]));
+        return outcome;
+    }
+
+    private static List<ChatMessage> RemoveContextCompactionCall(ContextCompactionRequest request)
+    {
+        var result = new List<ChatMessage>(request.Messages.Count);
+        var removedCallCount = 0;
+
+        foreach (var message in request.Messages)
+        {
+            var contents = new List<AIContent>(message.Contents.Count);
+            foreach (var content in message.Contents)
+            {
+                if (content is FunctionCallContent call
+                    && string.Equals(call.CallId, request.CallContent.CallId, StringComparison.Ordinal)
+                    && string.Equals(call.Name, ContextCompactionTool.Name, StringComparison.Ordinal))
+                {
+                    removedCallCount++;
+                    continue;
+                }
+
+                contents.Add(content);
+            }
+
+            if (contents.Count > 0)
+            {
+                result.Add(CloneMessage(message, contents));
+            }
+        }
+
+        if (removedCallCount != 1)
+        {
+            throw new InvalidOperationException("未能在当前运行上下文中唯一定位主动压缩工具调用。");
+        }
+
         return result;
+    }
+
+    private static void EnsureUserMessagesWerePreserved(
+        IReadOnlyList<ChatMessage> source,
+        IReadOnlyList<ChatMessage> compressed)
+    {
+        var compressedUsers = compressed
+            .Where(static message => message.Role == ChatRole.User)
+            .ToList();
+        var searchStart = 0;
+
+        foreach (var sourceUser in source.Where(static message => message.Role == ChatRole.User))
+        {
+            var match = -1;
+            for (var index = searchStart; index < compressedUsers.Count; index++)
+            {
+                if (AreUserMessagesEquivalent(sourceUser, compressedUsers[index]))
+                {
+                    match = index;
+                    break;
+                }
+            }
+
+            if (match < 0)
+            {
+                throw new InvalidOperationException(
+                    "ITokenCompressor 在模型主动压缩时必须原样、按原顺序保留所有 User 消息。");
+            }
+
+            searchStart = match + 1;
+        }
     }
 
     private bool CanForceCompress(List<ChatMessage> attemptHistory, Exception exception)
@@ -482,16 +636,46 @@ public sealed class AgentSession : IAgentSession
         return history.Any(static message => message.Role != ChatRole.System);
     }
 
+    private static UsageDetails? AddUsage(UsageDetails? aggregate, UsageDetails? current)
+    {
+        if (current is null)
+        {
+            return aggregate;
+        }
+
+        if (aggregate is null)
+        {
+            return current;
+        }
+
+        aggregate.Add(current);
+        return aggregate;
+    }
+
     private async Task CommitSuccessfulRunAsync(
-        List<ChatMessage> attemptHistory,
+        IReadOnlyList<ChatMessage> workingMessages,
+        ChatMessage modelUserMessage,
         ChatMessage? historyUserMessage,
         IEnumerable<ChatMessage> responseMessages,
+        TokenCompressionResult? pendingModelRequestedMemory,
         CancellationToken cancellationToken)
     {
-        var committedHistory = CloneMessages(attemptHistory);
+        var committedHistory = CloneMessages(workingMessages);
+        var modelUserIndex = committedHistory.FindLastIndex(message =>
+            message.Role == ChatRole.User
+            && AreUserMessagesEquivalent(message, modelUserMessage));
+        if (modelUserIndex < 0)
+        {
+            throw new InvalidOperationException("当前运行的 User 消息未被保留，无法提交会话历史。");
+        }
+
         if (historyUserMessage is not null)
         {
-            committedHistory.Add(CloneMessage(historyUserMessage));
+            committedHistory[modelUserIndex] = CloneMessage(historyUserMessage);
+        }
+        else
+        {
+            committedHistory.RemoveAt(modelUserIndex);
         }
 
         var handler = _agent.Options.MessageHandler;
@@ -520,6 +704,13 @@ public sealed class AgentSession : IAgentSession
             committedHistory.Add(CloneMessage(responseMessage));
         }
 
+        if (pendingModelRequestedMemory is not null)
+        {
+            await _memory.StoreAsync(
+                pendingModelRequestedMemory,
+                cancellationToken).ConfigureAwait(false);
+        }
+
         lock (_historySync)
         {
             _history.Clear();
@@ -529,7 +720,8 @@ public sealed class AgentSession : IAgentSession
 
     private IChatClient CreateEffectiveChatClient(
         ChatOptions? chatOptions,
-        ToolInvocationTracker toolTracker)
+        ToolInvocationTracker toolTracker,
+        ContextCompactionTracker compactionTracker)
     {
         if (chatOptions?.Tools is not { Count: > 0 })
         {
@@ -544,6 +736,11 @@ public sealed class AgentSession : IAgentSession
                 if (!TryNormalizeFunctionArguments(context.Function, context.Arguments, out var argumentError))
                 {
                     return argumentError;
+                }
+
+                if (ReferenceEquals(context.Function, _contextCompactionTool.Function))
+                {
+                    return compactionTracker.HandleInvocation(context);
                 }
 
                 if (ReferenceEquals(context.Function, _memory.RecallTool))
@@ -654,10 +851,16 @@ public sealed class AgentSession : IAgentSession
             .ToArray());
     }
 
-    private ChatOptions? CreateEffectiveChatOptions(ChatOptions? runOptions)
+    private ChatOptions? CreateEffectiveChatOptions(
+        ChatOptions? runOptions,
+        ContextCompactionTracker compactionTracker)
     {
         var options = _agent.Options.CreateChatOptions(runOptions);
-        if (!_agent.Options.EnableMemoryRecallTool)
+        var includeMemoryRecall = _agent.Options.EnableMemoryRecallTool;
+        var includeContextCompaction = _agent.Options.EnableContextCompactionTool
+            && _agent.Options.TokenCompressor is not null
+            && !compactionTracker.HasApplied;
+        if (!includeMemoryRecall && !includeContextCompaction)
         {
             return options;
         }
@@ -665,20 +868,36 @@ public sealed class AgentSession : IAgentSession
         options ??= new ChatOptions();
         options.Tools ??= new List<AITool>();
 
-        var existing = options.Tools.FirstOrDefault(tool =>
-            string.Equals(tool.Name, _memory.RecallTool.Name, StringComparison.Ordinal));
-        if (existing is not null && !ReferenceEquals(existing, _memory.RecallTool))
+        if (includeMemoryRecall)
+        {
+            AddBuiltInTool(options.Tools, _memory.RecallTool, "记忆工具");
+        }
+
+        if (includeContextCompaction)
+        {
+            AddBuiltInTool(options.Tools, _contextCompactionTool.Function, "上下文压缩工具");
+        }
+
+        return options;
+    }
+
+    private static void AddBuiltInTool(
+        IList<AITool> tools,
+        AIFunction builtInTool,
+        string description)
+    {
+        var existing = tools.FirstOrDefault(tool =>
+            string.Equals(tool.Name, builtInTool.Name, StringComparison.Ordinal));
+        if (existing is not null && !ReferenceEquals(existing, builtInTool))
         {
             throw new InvalidOperationException(
-                $"工具名称 '{_memory.RecallTool.Name}' 由 AgentFramework 内置记忆工具保留。");
+                $"工具名称 '{builtInTool.Name}' 由 AgentFramework 内置{description}保留。");
         }
 
         if (existing is null)
         {
-            options.Tools.Add(_memory.RecallTool);
+            tools.Add(builtInTool);
         }
-
-        return options;
     }
 
     private static List<ChatMessage> BuildPreparedMessages(
@@ -705,7 +924,12 @@ public sealed class AgentSession : IAgentSession
 
     private static ChatMessage CloneMessage(ChatMessage message)
     {
-        return new ChatMessage(message.Role, message.Contents.ToList())
+        return CloneMessage(message, message.Contents.ToList());
+    }
+
+    private static ChatMessage CloneMessage(ChatMessage message, IList<AIContent> contents)
+    {
+        return new ChatMessage(message.Role, contents)
         {
             AuthorName = message.AuthorName,
             CreatedAt = message.CreatedAt,
@@ -715,6 +939,49 @@ public sealed class AgentSession : IAgentSession
                 ? null
                 : new AdditionalPropertiesDictionary(message.AdditionalProperties),
         };
+    }
+
+    private static bool AreUserMessagesEquivalent(ChatMessage left, ChatMessage right)
+    {
+        if (left.Role != ChatRole.User
+            || right.Role != ChatRole.User
+            || left.Contents.Count != right.Contents.Count)
+        {
+            return false;
+        }
+
+        for (var index = 0; index < left.Contents.Count; index++)
+        {
+            var leftContent = left.Contents[index];
+            var rightContent = right.Contents[index];
+            if (ReferenceEquals(leftContent, rightContent))
+            {
+                continue;
+            }
+
+            if (leftContent.GetType() != rightContent.GetType()
+                || !string.Equals(
+                    SerializeContentForComparison(leftContent),
+                    SerializeContentForComparison(rightContent),
+                    StringComparison.Ordinal))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static string SerializeContentForComparison(AIContent content)
+    {
+        try
+        {
+            return JsonSerializer.Serialize(content, content.GetType());
+        }
+        catch (Exception exception) when (exception is NotSupportedException or JsonException)
+        {
+            return content.ToString() ?? string.Empty;
+        }
     }
 
     private static List<ChatMessage> CloneMessages(IEnumerable<ChatMessage> messages)
@@ -757,6 +1024,207 @@ public sealed class AgentSession : IAgentSession
         {
             Interlocked.Exchange(ref _executionStarted, 1);
         }
+    }
+
+    private sealed class ContextCompactionTracker
+    {
+        private const int MaximumSummaryLength = 8_000;
+        private const int MaximumReasonLength = 1_000;
+        private readonly HashSet<string> _compactionCallIds = new HashSet<string>(StringComparer.Ordinal);
+        private IReadOnlyList<ChatMessage> _attemptMessages = Array.Empty<ChatMessage>();
+        private bool _visibleAssistantOutputStarted;
+
+        public bool HasApplied { get; private set; }
+
+        public ContextCompactionRequest? PendingRequest { get; private set; }
+
+        public void BeginAttempt(IReadOnlyList<ChatMessage> messages)
+        {
+            _attemptMessages = messages;
+            PendingRequest = null;
+            _compactionCallIds.Clear();
+        }
+
+        public object HandleInvocation(FunctionInvocationContext context)
+        {
+            _compactionCallIds.Add(context.CallContent.CallId);
+
+            if (HasApplied)
+            {
+                return ContextCompactionToolResponse.Rejected("当前运行已经执行过一次主动上下文压缩，请继续完成任务。");
+            }
+
+            if (PendingRequest is not null)
+            {
+                return ContextCompactionToolResponse.Rejected("当前已有待处理的上下文压缩请求。");
+            }
+
+            if (context.FunctionCount != 1)
+            {
+                return ContextCompactionToolResponse.Rejected(
+                    "主动上下文压缩必须独占一次工具调用，请不要与其他工具并行调用。");
+            }
+
+            if (context.IsStreaming && _visibleAssistantOutputStarted)
+            {
+                return ContextCompactionToolResponse.Rejected(
+                    "当前流式响应已经输出 Assistant 内容，不能再重写本轮上下文。请继续完成本轮回答。");
+            }
+
+            var summary = GetStringArgument(context.Arguments, "summary")?.Trim();
+            if (summary is null || summary.Length == 0)
+            {
+                return ContextCompactionToolResponse.Rejected("summary 不能为空，请提供简洁的任务检查点摘要。");
+            }
+
+            if (summary.Length > MaximumSummaryLength)
+            {
+                return ContextCompactionToolResponse.Rejected(
+                    $"summary 不能超过 {MaximumSummaryLength} 个字符，请提炼任务相关关键信息后重试。");
+            }
+
+            var reason = GetStringArgument(context.Arguments, "reason")?.Trim();
+            if (reason?.Length > MaximumReasonLength)
+            {
+                return ContextCompactionToolResponse.Rejected(
+                    $"reason 不能超过 {MaximumReasonLength} 个字符。");
+            }
+
+            PendingRequest = new ContextCompactionRequest(
+                CaptureInvocationMessages(context.Messages),
+                context.CallContent,
+                summary,
+                string.IsNullOrWhiteSpace(reason) ? null : reason);
+            context.Terminate = true;
+            return ContextCompactionToolResponse.AcceptedRequest(summary, reason);
+        }
+
+        public ChatResponseUpdate? CreateVisibleUpdate(ChatResponseUpdate update)
+        {
+            var filteredContents = new List<AIContent>(update.Contents.Count);
+            var removedInternalContent = false;
+
+            foreach (var content in update.Contents)
+            {
+                if (content is FunctionCallContent call
+                    && string.Equals(call.Name, ContextCompactionTool.Name, StringComparison.Ordinal))
+                {
+                    _compactionCallIds.Add(call.CallId);
+                    removedInternalContent = true;
+                    continue;
+                }
+
+                if (content is FunctionResultContent result
+                    && _compactionCallIds.Contains(result.CallId))
+                {
+                    removedInternalContent = true;
+                    continue;
+                }
+
+                filteredContents.Add(content);
+            }
+
+            if (!removedInternalContent)
+            {
+                return update;
+            }
+
+            if (filteredContents.Count == 0)
+            {
+                return null;
+            }
+
+            return new ChatResponseUpdate
+            {
+                AdditionalProperties = update.AdditionalProperties,
+                AuthorName = update.AuthorName,
+                Contents = filteredContents,
+                ConversationId = update.ConversationId,
+                ContinuationToken = update.ContinuationToken,
+                CreatedAt = update.CreatedAt,
+                FinishReason = update.FinishReason,
+                MessageId = update.MessageId,
+                ModelId = update.ModelId,
+                RawRepresentation = update.RawRepresentation,
+                ResponseId = update.ResponseId,
+                Role = update.Role,
+            };
+        }
+
+        public void ObserveVisibleUpdate(ChatResponseUpdate update)
+        {
+            if (update.Role == ChatRole.Assistant
+                && update.Contents.Any(static content =>
+                    content is not FunctionCallContent and not UsageContent))
+            {
+                _visibleAssistantOutputStarted = true;
+            }
+        }
+
+        public void MarkApplied()
+        {
+            HasApplied = true;
+            PendingRequest = null;
+        }
+
+        private IReadOnlyList<ChatMessage> CaptureInvocationMessages(IList<ChatMessage> invocationMessages)
+        {
+            var invocationContainsAttempt = invocationMessages.Count >= _attemptMessages.Count;
+            for (var index = 0; invocationContainsAttempt && index < _attemptMessages.Count; index++)
+            {
+                invocationContainsAttempt = ReferenceEquals(invocationMessages[index], _attemptMessages[index]);
+            }
+
+            if (invocationContainsAttempt)
+            {
+                return CloneMessages(invocationMessages).AsReadOnly();
+            }
+
+            var combined = CloneMessages(_attemptMessages);
+            combined.AddRange(CloneMessages(invocationMessages));
+            return combined.AsReadOnly();
+        }
+
+        private static string? GetStringArgument(AIFunctionArguments arguments, string name)
+        {
+            if (!arguments.TryGetValue(name, out var value))
+            {
+                return null;
+            }
+
+            return value switch
+            {
+                null => null,
+                string text => text,
+                JsonElement element when element.ValueKind == JsonValueKind.String => element.GetString(),
+                JsonElement element => element.GetRawText(),
+                _ => value.ToString(),
+            };
+        }
+    }
+
+    private sealed class ContextCompactionRequest(
+        IReadOnlyList<ChatMessage> messages,
+        FunctionCallContent callContent,
+        string summary,
+        string? reason)
+    {
+        public IReadOnlyList<ChatMessage> Messages { get; } = messages;
+
+        public FunctionCallContent CallContent { get; } = callContent;
+
+        public string Summary { get; } = summary;
+
+        public string? Reason { get; } = reason;
+    }
+
+    private sealed class CompressionOutcome(
+        List<ChatMessage> messages,
+        TokenCompressionResult compression)
+    {
+        public List<ChatMessage> Messages { get; } = messages;
+
+        public TokenCompressionResult Compression { get; } = compression;
     }
 
     private sealed class RunContext(

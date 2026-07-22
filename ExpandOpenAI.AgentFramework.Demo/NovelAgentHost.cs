@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using ExpandOpenAI;
 using ExpandOpenAI.AgentFramework;
@@ -7,12 +8,13 @@ namespace ExpandOpenAI.AgentFramework.Demo;
 /// <summary>
 /// 为本机 Web 写作台维护一个串行 Agent 运行时；配置变更时会安全地重建运行时。
 /// </summary>
-internal sealed class NovelAgentHost(IHttpClientFactory httpClientFactory) : IDisposable
+internal sealed class NovelAgentHost(IHttpClientFactory httpClientFactory) : INovelRunExecutor, IDisposable
 {
     private readonly DemoSettingsStore _settingsStore = new();
     private readonly SemaphoreSlim _gate = new(1, 1);
+    private readonly SemaphoreSlim _runGate = new(1, 1);
     private OpenAICompatibleChatClient? _chatClient;
-    private NovelWorkspace? _workspace;
+    private HttpClient? _workspaceHttpClient;
     private AgentDemoApplication? _application;
     private bool _disposed;
 
@@ -44,6 +46,7 @@ internal sealed class NovelAgentHost(IHttpClientFactory httpClientFactory) : IDi
             {
                 configured.ApiKey = existing.ApiKey;
             }
+            configured.SystemPromptVersion = Math.Max(1, existing.SystemPromptVersion + 1);
 
             if (string.IsNullOrWhiteSpace(configured.ApiKey)
                 && string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("OPENAI_API_KEY")))
@@ -141,51 +144,147 @@ internal sealed class NovelAgentHost(IHttpClientFactory httpClientFactory) : IDi
         }
     }
 
-    public async IAsyncEnumerable<NovelStreamEvent> RunStreamAsync(
-        string? sessionId,
-        string message,
-        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    public async Task<NovelContextDiagnostics> GetContextDiagnosticsAsync(
+        CancellationToken cancellationToken = default)
     {
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
-        AgentDemoApplication? application = null;
-        Exception? preparationError = null;
         try
         {
-            application = await EnsureApplicationAsync(cancellationToken).ConfigureAwait(false);
-            if (!string.IsNullOrWhiteSpace(sessionId)
-                && !string.Equals(sessionId, application.ActiveSessionId, StringComparison.Ordinal))
-            {
-                await application.SelectSessionAsync(sessionId, cancellationToken).ConfigureAwait(false);
-            }
-        }
-        catch (OperationCanceledException)
-        {
-            _gate.Release();
-            throw;
-        }
-        catch (Exception exception)
-        {
-            preparationError = exception;
-        }
-
-        if (preparationError is not null)
-        {
-            _gate.Release();
-            yield return new NovelStreamEvent("error", $"{preparationError.GetType().Name}: {preparationError.Message}");
-            yield break;
-        }
-
-        try
-        {
-            yield return new NovelStreamEvent("status", "已自动批准文件、HTTP 与全局记忆工具；正在执行任务…");
-            await foreach (var update in application!.SendStreamAsync(message, cancellationToken).ConfigureAwait(false))
-            {
-                yield return update;
-            }
+            return await (await EnsureApplicationAsync(cancellationToken).ConfigureAwait(false))
+                .GetContextDiagnosticsAsync(cancellationToken)
+                .ConfigureAwait(false);
         }
         finally
         {
             _gate.Release();
+        }
+    }
+
+    public async Task UpdateSessionInstructionsAsync(
+        string sessionId,
+        string? instructions,
+        CancellationToken cancellationToken = default)
+    {
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await (await EnsureApplicationAsync(cancellationToken).ConfigureAwait(false))
+                .UpdateSessionInstructionsAsync(sessionId, instructions, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async Task UpsertGlobalMemoryAsync(
+        string id,
+        string content,
+        CancellationToken cancellationToken = default)
+    {
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await (await EnsureApplicationAsync(cancellationToken).ConfigureAwait(false))
+                .UpsertGlobalMemoryAsync(id, content, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async Task<bool> DeleteMemoryAsync(
+        string scope,
+        string id,
+        CancellationToken cancellationToken = default)
+    {
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            return await (await EnsureApplicationAsync(cancellationToken).ConfigureAwait(false))
+                .DeleteMemoryAsync(scope, id, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async Task<string> GetRunStateDirectoryAsync(CancellationToken cancellationToken = default)
+    {
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var application = await EnsureApplicationAsync(cancellationToken).ConfigureAwait(false);
+            var directory = Path.Combine(application.RootWorkspacePath, ".expandopenai-agent", "runs");
+            Directory.CreateDirectory(directory);
+            return directory;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async IAsyncEnumerable<NovelStreamEvent> ExecuteRunAsync(
+        string sessionId,
+        string message,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        await _runGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            AgentDemoApplication application;
+            await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                application = await EnsureApplicationAsync(cancellationToken).ConfigureAwait(false);
+                if (!string.Equals(sessionId, application.ActiveSessionId, StringComparison.Ordinal))
+                {
+                    await application.SelectSessionAsync(sessionId, cancellationToken).ConfigureAwait(false);
+                }
+            }
+            finally
+            {
+                _gate.Release();
+            }
+
+            yield return new NovelStreamEvent("status", "正在准备上下文、记忆和工具，并等待模型响应…");
+            var elapsed = Stopwatch.StartNew();
+            await using var enumerator = application
+                .SendStreamAsync(message, cancellationToken)
+                .GetAsyncEnumerator(cancellationToken);
+            var moveNext = enumerator.MoveNextAsync().AsTask();
+            while (true)
+            {
+                var completed = await Task.WhenAny(
+                    moveNext,
+                    Task.Delay(TimeSpan.FromSeconds(5), cancellationToken)).ConfigureAwait(false);
+                if (!ReferenceEquals(completed, moveNext))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    yield return new NovelStreamEvent(
+                        "heartbeat",
+                        $"任务仍在运行，已用时 {Math.Max(1, (int)elapsed.Elapsed.TotalSeconds)} 秒。");
+                    continue;
+                }
+
+                if (!await moveNext.ConfigureAwait(false))
+                {
+                    break;
+                }
+
+                yield return enumerator.Current;
+                moveNext = enumerator.MoveNextAsync().AsTask();
+            }
+        }
+        finally
+        {
+            _runGate.Release();
         }
     }
 
@@ -199,6 +298,7 @@ internal sealed class NovelAgentHost(IHttpClientFactory httpClientFactory) : IDi
         _disposed = true;
         DisposeRuntime();
         _gate.Dispose();
+        _runGate.Dispose();
     }
 
     private async Task<NovelBootstrapResponse> CreateBootstrapAsync(CancellationToken cancellationToken)
@@ -234,7 +334,8 @@ internal sealed class NovelAgentHost(IHttpClientFactory httpClientFactory) : IDi
                 application.Sessions,
                 application.ActiveSessionId,
                 application.GetActiveConversation(),
-                application.Workspace.RootPath,
+                application.RootWorkspacePath,
+                application.ActiveWorkspace.RootPath,
                 application.SessionStatePath,
                 application.GlobalMemoryStatePath);
         }
@@ -278,24 +379,28 @@ internal sealed class NovelAgentHost(IHttpClientFactory httpClientFactory) : IDi
         }
 
         var chatClient = new OpenAICompatibleChatClient(options);
-        var workspace = new NovelWorkspace(workspacePath, httpClientFactory.CreateClient("novel-http"));
+        var workspaceHttpClient = httpClientFactory.CreateClient("novel-http");
         var application = new AgentDemoApplication(
             chatClient,
             options,
-            workspace,
+            workspacePath,
+            workspaceHttpClient,
             effective.CompressionTokenThreshold,
+            effective.MaximumOutputTokens,
+            effective.SystemPrompt,
+            effective.SystemPromptVersion,
             new InMemoryMemoryUnit());
         try
         {
             await application.InitializeAsync(cancellationToken).ConfigureAwait(false);
             _chatClient = chatClient;
-            _workspace = workspace;
+            _workspaceHttpClient = workspaceHttpClient;
             _application = application;
             return application;
         }
         catch
         {
-            workspace.Dispose();
+            workspaceHttpClient.Dispose();
             chatClient.Dispose();
             throw;
         }
@@ -303,15 +408,15 @@ internal sealed class NovelAgentHost(IHttpClientFactory httpClientFactory) : IDi
 
     private async Task<NovelWorkspace> GetWorkspaceAsync(CancellationToken cancellationToken)
     {
-        if (_workspace is not null)
+        if (_application is not null)
         {
-            return _workspace;
+            return _application.ActiveWorkspace;
         }
 
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            return (await EnsureApplicationAsync(cancellationToken).ConfigureAwait(false)).Workspace;
+            return (await EnsureApplicationAsync(cancellationToken).ConfigureAwait(false)).ActiveWorkspace;
         }
         finally
         {
@@ -322,8 +427,8 @@ internal sealed class NovelAgentHost(IHttpClientFactory httpClientFactory) : IDi
     private void DisposeRuntime()
     {
         _application = null;
-        _workspace?.Dispose();
-        _workspace = null;
+        _workspaceHttpClient?.Dispose();
+        _workspaceHttpClient = null;
         _chatClient?.Dispose();
         _chatClient = null;
     }
@@ -351,6 +456,14 @@ internal sealed class NovelAgentHost(IHttpClientFactory httpClientFactory) : IDi
             throw new ArgumentException("小说工作区文件夹不能为空。 ");
         }
 
+        var systemPrompt = request.SystemPrompt is null
+            ? DemoSettings.DefaultSystemPrompt
+            : request.SystemPrompt.Trim();
+        if (systemPrompt.Length == 0)
+        {
+            throw new ArgumentException("系统提示词不能为空。 ");
+        }
+
         var compressionTokenThreshold = request.CompressionTokenThreshold
             ?? DemoSettings.DefaultCompressionTokenThreshold;
         if (compressionTokenThreshold is < DemoSettings.MinimumCompressionTokenThreshold
@@ -359,6 +472,16 @@ internal sealed class NovelAgentHost(IHttpClientFactory httpClientFactory) : IDi
             throw new ArgumentException(
                 $"上下文压缩阈值必须在 {DemoSettings.MinimumCompressionTokenThreshold:N0} 到 "
                 + $"{DemoSettings.MaximumCompressionTokenThreshold:N0} tokens 之间。 ");
+        }
+
+        var maximumOutputTokens = request.MaximumOutputTokens
+            ?? DemoSettings.DefaultMaximumOutputTokens;
+        if (maximumOutputTokens is < DemoSettings.MinimumMaximumOutputTokens
+            or > DemoSettings.MaximumMaximumOutputTokens)
+        {
+            throw new ArgumentException(
+                $"单次模型输出上限必须在 {DemoSettings.MinimumMaximumOutputTokens:N0} 到 "
+                + $"{DemoSettings.MaximumMaximumOutputTokens:N0} tokens 之间。 ");
         }
 
         string workspacePath;
@@ -380,6 +503,9 @@ internal sealed class NovelAgentHost(IHttpClientFactory httpClientFactory) : IDi
             ChatRequestPath = request.ChatRequestPath.Trim(),
             NovelWorkspacePath = workspacePath,
             CompressionTokenThreshold = compressionTokenThreshold,
+            MaximumOutputTokens = maximumOutputTokens,
+            SystemPrompt = systemPrompt,
+            SystemPromptVersion = 1,
         };
     }
 
@@ -390,7 +516,15 @@ internal sealed class NovelAgentHost(IHttpClientFactory httpClientFactory) : IDi
             settings.ChatModel,
             settings.ChatRequestPath,
             settings.NovelWorkspacePath,
-            settings.CompressionTokenThreshold);
+            settings.CompressionTokenThreshold,
+            settings.MaximumOutputTokens <= 0
+                ? DemoSettings.DefaultMaximumOutputTokens
+                : settings.MaximumOutputTokens,
+            string.IsNullOrWhiteSpace(settings.SystemPrompt)
+                ? DemoSettings.DefaultSystemPrompt
+                : settings.SystemPrompt,
+            DemoSettings.DefaultSystemPrompt,
+            Math.Max(1, settings.SystemPromptVersion));
     }
 
     private static string ResolveNovelWorkspacePath(DemoSettings settings, string defaultWorkspacePath)
@@ -407,7 +541,11 @@ internal sealed record NovelPublicSettings(
     string ChatModel,
     string ChatRequestPath,
     string? NovelWorkspacePath,
-    int CompressionTokenThreshold);
+    int CompressionTokenThreshold,
+    int MaximumOutputTokens,
+    string SystemPrompt,
+    string DefaultSystemPrompt,
+    int SystemPromptVersion);
 
 internal sealed record NovelBootstrapResponse(
     bool IsConfigured,
@@ -416,6 +554,7 @@ internal sealed record NovelBootstrapResponse(
     IReadOnlyList<NovelSessionSummary> Sessions,
     string? ActiveSessionId,
     IReadOnlyList<NovelConversationItem> Conversation,
+    string? RootWorkspacePath,
     string? WorkspacePath,
     string? SessionStatePath,
     string? GlobalMemoryStatePath)
@@ -429,6 +568,7 @@ internal sealed record NovelBootstrapResponse(
             [],
             null,
             [],
+            null,
             null,
             null,
             null);

@@ -80,17 +80,23 @@ internal sealed class NovelSessionStore
     public static PersistedNovelSession CreateSnapshot(
         string id,
         string name,
+        string workspaceDirectoryName,
+        string sessionInstructions,
         DateTimeOffset lastOpenedAt,
         IReadOnlyList<ChatMessage> history,
-        IReadOnlyList<MemoryEntry> memories)
+        IReadOnlyList<MemoryEntry> memories,
+        IReadOnlyList<NovelCompressionRecord> compressionHistory)
     {
         return new PersistedNovelSession
         {
             Id = id,
             Name = name,
+            WorkspaceDirectoryName = workspaceDirectoryName,
+            SessionInstructions = sessionInstructions,
             LastOpenedAt = lastOpenedAt,
             History = history.Select(PersistedChatMessage.FromChatMessage).ToList(),
             Memories = memories.Select(PersistedMemoryEntry.FromMemoryEntry).ToList(),
+            CompressionHistory = compressionHistory.ToList(),
         };
     }
 }
@@ -101,11 +107,20 @@ internal sealed class PersistedNovelSession
 
     public string Name { get; set; } = string.Empty;
 
+    /// <summary>
+    /// 此会话在根工作区下的专属子目录。旧版状态没有该字段时，启动时会自动生成并回写。
+    /// </summary>
+    public string WorkspaceDirectoryName { get; set; } = string.Empty;
+
+    public string SessionInstructions { get; set; } = string.Empty;
+
     public DateTimeOffset LastOpenedAt { get; set; }
 
     public List<PersistedChatMessage> History { get; set; } = [];
 
     public List<PersistedMemoryEntry> Memories { get; set; } = [];
+
+    public List<NovelCompressionRecord> CompressionHistory { get; set; } = [];
 
     public bool IsValid => Guid.TryParse(Id, out _)
         && !string.IsNullOrWhiteSpace(Name)

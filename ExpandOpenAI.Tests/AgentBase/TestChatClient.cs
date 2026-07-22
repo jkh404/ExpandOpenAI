@@ -8,6 +8,8 @@ internal sealed class TestChatClient : IChatClient
 {
     public int ResponseCallCount { get; private set; }
 
+    public int StreamingResponseCallCount { get; private set; }
+
     public Func<IReadOnlyList<ChatMessage>, ChatOptions?, CancellationToken, Task<ChatResponse>>? ResponseHandler { get; init; }
 
     public Func<IReadOnlyList<ChatMessage>, ChatOptions?, CancellationToken, IAsyncEnumerable<ChatResponseUpdate>>? StreamingHandler { get; init; }
@@ -27,6 +29,7 @@ internal sealed class TestChatClient : IChatClient
         ChatOptions? options = null,
         CancellationToken cancellationToken = default)
     {
+        StreamingResponseCallCount++;
         return StreamingHandler?.Invoke(messages.ToList().AsReadOnly(), options, cancellationToken)
             ?? EmptyStream(cancellationToken);
     }
@@ -53,7 +56,8 @@ internal sealed class TestTokenCompressor(
     IReadOnlyList<ChatMessage> result,
     bool shouldCompress = false,
     IReadOnlyList<MemoryEntry>? sessionMemories = null,
-    IReadOnlyList<MemoryEntry>? globalMemories = null) : ITokenCompressor
+    IReadOnlyList<MemoryEntry>? globalMemories = null,
+    Func<TokenCompressionContext, TokenCompressionResult>? resultFactory = null) : ITokenCompressor
 {
     public int CallCount { get; private set; }
 
@@ -72,9 +76,10 @@ internal sealed class TestTokenCompressor(
         cancellationToken.ThrowIfCancellationRequested();
         CallCount++;
         LastContext = context;
-        return new ValueTask<TokenCompressionResult>(new TokenCompressionResult(
-            result,
-            sessionMemories,
-            globalMemories));
+        return new ValueTask<TokenCompressionResult>(resultFactory?.Invoke(context)
+            ?? new TokenCompressionResult(
+                result,
+                sessionMemories,
+                globalMemories));
     }
 }

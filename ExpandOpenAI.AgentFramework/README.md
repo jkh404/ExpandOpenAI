@@ -14,6 +14,7 @@
 - 按用户轮次工作的默认历史压缩器
 - 独立的会话层记忆和可共享的全局层记忆
 - 内置只读 `recall_memory` 召回工具
+- 默认启用、可关闭的 `request_context_compaction` 模型主动压缩工具
 - 可替换的消息处理器、压缩器和记忆体 Adapter
 - 上下文超限后的单次压缩恢复
 - 工具调用审批
@@ -111,11 +112,51 @@ public sealed class CustomAgent : AIAgent
 
 `AgentOptions` 默认使用 `DefaultTokenCompressor`。压缩器主动触发或模型返回上下文超限后，默认执行：
 
-1. 最近 1 轮尽量原样保留；单轮估算超限时改为摘要。
-2. 再之前的 10 轮分别生成摘要并保留在活动上下文。
-3. 更早的轮次分别生成摘要，移出活动上下文并写入会话层记忆。
+1. 如果 `MaximumMessageTokenEstimate` 大于 0，先压缩超过该阈值的单条 Assistant 文本或 Tool Result；设置为 0 时关闭消息级压缩。User、System 和 FunctionCall 不参与消息级压缩，Tool Result 压缩后保留原 CallId。
+2. 消息级压缩完成后重新估算历史，再执行轮次级压缩。
+3. 最近 1 轮整轮原样保留；只有该轮 Token 估算超过活动历史总阈值的三分之二时，才压缩其中的 Assistant 和 Tool 内容。
+4. 再之前的 10 轮分别保留 User 消息原文，并将 Assistant 和 Tool 内容压缩为逐轮摘要后继续放在活动上下文。
+5. 更早的轮次移出活动上下文并写入会话层记忆；记忆中仍保留 User 消息原文，并附带 Assistant 和 Tool 内容摘要。
 
-`DefaultTokenCompressorOptions` 可以调整原样轮数、摘要轮数、Token 估算限制、摘要输出限制和 Token 估算器。内置估算器是跨模型的保守近似值；需要精确限制时，应注入与实际模型匹配的 `TokenEstimator`。
+`DefaultTokenCompressorOptions` 可以调整消息级阈值、原样轮数、摘要轮数、活动历史 Token 阈值、摘要输出限制、两级摘要提示词和 Token 估算器。最近原样轮次的压缩界限固定为活动历史总阈值的三分之二。内置估算器是跨模型的保守近似值；需要精确限制时，应注入与实际模型匹配的 `TokenEstimator`。
+
+消息级与轮次级摘要默认都会要求模型“提炼任务相关关键信息”。可以分别通过 `MessageSummaryPrompt` 和 `SummaryPrompt` 覆盖；两者共享 `SummaryMaxOutputTokens`，并固定使用 `Temperature = 0`。摘要使用 Agent 的同一个 `IChatClient` 及其默认模型。
+
+如果一个轮次包含大量 Assistant、FunctionCall 和 Tool Result，导致轮次摘要输入本身超过总历史阈值的三分之二，压缩器会执行分层摘要：
+
+1. FunctionCall 与具有对应 CallId 的 Tool Result 优先组成同一个有序交互块。
+2. 按 Token 估算将交互块组织为多个输入片段；只有单个交互块自身仍然超限时，才退化为有序文本分片。
+3. 每个片段分别生成局部摘要，再按原始顺序递归合并，最多归并 8 轮。
+4. 中间摘要不会写入活动历史或 MemoryUnit；最终仍然只保留 User 原文和一条轮次摘要。
+
+工具摘要输入会显式包含工具名称、CallId、参数、结果和异常。若局部摘要无法在配置阈值内继续收敛，压缩器会明确抛出异常，而不是静默截断信息。
+
+### 模型主动压缩
+
+配置了 `TokenCompressor` 时，框架默认向模型提供内置 `request_context_compaction(summary, reason?)` 工具。模型可以在上下文冗长、单轮工具调用过多或需要建立任务检查点时主动调用它；`summary` 应提炼当前目标、关键事实、决定、约束、已完成工作、工具结果、未完成事项和下一步。
+
+该工具不会在普通业务工具内部重入 `AgentSession`。工具调用只记录压缩请求并结束当前内部工具循环，`AgentSession` 随后在安全检查点压缩本次运行中的完整上下文，再把压缩结果和原工具调用/结果形式的模型任务检查点放回上下文，最后让模型在同一轮继续推理。因此，压缩前已经产生的大量 Assistant、FunctionCall 和 Tool Result 也会进入压缩器，而不必等待下一条 User 消息。
+
+主动压缩遵守以下约束：
+
+- `System` 消息始终绕过压缩器并原样恢复。
+- `User` 消息必须原样、按原顺序保留；模型主动压缩路径会校验自定义压缩器的结果。
+- 主动压缩工具必须独占一次工具调用，不能与业务工具并行请求。
+- 同一次 `RunAsync` 或 `RunStreamAsync` 最多成功执行一次主动压缩，之后不再向模型提供该工具。
+- `summary` 最多 8000 个字符，`reason` 最多 1000 个字符。
+- 流式调用会隐藏该内置控制工具自身的 FunctionCall 和 FunctionResult；如果已经向调用方输出 Assistant 正文，本轮后续主动压缩请求会被拒绝，避免重写已经公开的响应。
+- 主动压缩产生的待写入记忆会在本轮最终成功后提交；本轮后续模型调用失败时，不提交压缩历史和这些新增记忆。
+
+可以显式关闭该能力；自动阈值压缩和上下文超限恢复不受影响：
+
+```csharp
+var agent = new DefaultAIAgent(client, new AgentOptions
+{
+    EnableContextCompactionTool = false,
+});
+```
+
+内置主动压缩工具属于框架控制工具，不经过 `ToolApprovalAsync`。模型是否主动调用仍由模型决定，现有自动压缩策略继续作为安全兜底。
 
 自定义历史压缩器实现 `ITokenCompressor`，返回 `TokenCompressionResult`：
 
@@ -123,7 +164,7 @@ public sealed class CustomAgent : AIAgent
 - `SessionMemoriesToStore` 写入当前会话记忆。
 - `GlobalMemoriesToStore` 只在调用方明确配置 `GlobalMemoryUnit` 时写入。
 
-所有 `System` 消息都会完全绕过压缩器：它们不会出现在压缩输入中，也不允许由压缩器返回；压缩完成后，框架会把全部原系统提示恢复到活动历史。配置模板生成的系统提示只会在历史中不存在时插入，避免多轮运行重复累积。待移出的记忆会先按 ID 幂等写入记忆体；模型调用成功后，压缩历史才会替换原会话历史。记忆写入失败或模型调用失败都不会裁掉原历史。
+所有 `System` 消息都会完全绕过压缩器：它们不会出现在压缩输入中，也不允许由压缩器返回；压缩完成后，框架会把全部原系统提示恢复到活动历史。所有 `User` 消息在活动摘要或会话记忆中均保留原文，不交由摘要替代；默认摘要模型只负责压缩 Assistant 和 Tool 内容。配置模板生成的系统提示只会在历史中不存在时插入，避免多轮运行重复累积。待移出的记忆会先按 ID 幂等写入记忆体；模型调用成功后，压缩历史才会替换原会话历史。记忆写入失败或模型调用失败都不会裁掉原历史。
 
 ## 两层记忆
 

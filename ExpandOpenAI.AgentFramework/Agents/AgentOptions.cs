@@ -37,6 +37,7 @@ public class AgentOptions
         GlobalMemoryUnit = other.GlobalMemoryUnit;
         EnableMemoryRecallTool = other.EnableMemoryRecallTool;
         MemoryRecallMaxResults = other.MemoryRecallMaxResults;
+        EnableContextCompactionTool = other.EnableContextCompactionTool;
         DefaultChatOptions = other.DefaultChatOptions?.Clone();
         ToolApprovalAsync = other.ToolApprovalAsync;
         ContextLengthExceededDetector = other.ContextLengthExceededDetector;
@@ -92,6 +93,12 @@ public class AgentOptions
     /// 内置记忆召回工具每次最多返回的结果数。
     /// </summary>
     public int MemoryRecallMaxResults { get; init; } = 5;
+
+    /// <summary>
+    /// 是否向模型提供内置 <c>request_context_compaction</c> 工具，使模型可以主动压缩当前上下文。
+    /// 只有配置了 <see cref="TokenCompressor"/> 时才会提供该工具。默认启用。
+    /// </summary>
+    public bool EnableContextCompactionTool { get; init; } = true;
 
     /// <summary>
     /// 默认模型调用选项。每次运行都会克隆该实例。

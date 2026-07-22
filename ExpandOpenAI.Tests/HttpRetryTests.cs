@@ -51,6 +51,30 @@ public sealed class HttpRetryTests
     }
 
     [Fact]
+    public async Task StreamingChatClient_EmitsUsageFromFinalEmptyChoicesChunk()
+    {
+        using var handler = new DelegateHttpMessageHandler((_, _, _) => Task.FromResult(
+            EventStreamResponse(
+                "data: {\"id\":\"stream-usage\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"ok\"}}]}\n\n" +
+                "data: {\"id\":\"stream-usage\",\"choices\":[],\"usage\":{\"prompt_tokens\":12,\"completion_tokens\":8,\"total_tokens\":20,\"completion_tokens_details\":{\"reasoning_tokens\":3}}}\n\n" +
+                "data: [DONE]\n\n")));
+        using var client = new OpenAICompatibleChatClient(handler, ChatOptions());
+        var updates = new List<ChatResponseUpdate>();
+
+        await foreach (var update in client.GetStreamingResponseAsync("hello"))
+        {
+            updates.Add(update);
+        }
+
+        Assert.Equal("ok", updates.ToChatResponse().Text);
+        var usage = Assert.Single(
+            updates.SelectMany(static update => update.Contents).OfType<UsageContent>()).Details;
+        Assert.Equal(12, usage.InputTokenCount);
+        Assert.Equal(8, usage.OutputTokenCount);
+        Assert.Equal(3, usage.ReasoningTokenCount);
+    }
+
+    [Fact]
     public async Task EmbeddingGenerator_RetriesTransientNetworkException()
     {
         using var handler = new DelegateHttpMessageHandler((attempt, _, _) =>

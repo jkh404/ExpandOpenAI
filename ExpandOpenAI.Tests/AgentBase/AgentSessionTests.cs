@@ -466,6 +466,314 @@ public sealed class AgentSessionTests
     }
 
     [Fact]
+    public async Task ContextCompactionTool_IsEnabledByDefaultAndCanBeDisabled()
+    {
+        IReadOnlyList<string>? defaultToolNames = null;
+        using (var client = new TestChatClient
+        {
+            ResponseHandler = (_, options, _) =>
+            {
+                defaultToolNames = options!.Tools!.Select(static tool => tool.Name).ToList();
+                return Task.FromResult(Response("done"));
+            },
+        })
+        {
+            var session = new DefaultAIAgent(client, new AgentOptions()).CreateSession();
+            await session.RunAsync("hello");
+        }
+
+        IReadOnlyList<string>? disabledToolNames = null;
+        using (var client = new TestChatClient
+        {
+            ResponseHandler = (_, options, _) =>
+            {
+                disabledToolNames = options!.Tools!.Select(static tool => tool.Name).ToList();
+                return Task.FromResult(Response("done"));
+            },
+        })
+        {
+            var session = new DefaultAIAgent(client, new AgentOptions
+            {
+                EnableContextCompactionTool = false,
+            }).CreateSession();
+            await session.RunAsync("hello");
+        }
+
+        Assert.Contains("request_context_compaction", defaultToolNames!);
+        Assert.DoesNotContain("request_context_compaction", disabledToolNames!);
+    }
+
+    [Fact]
+    public async Task RunAsync_ModelCanCompactCurrentToolChainAndContinueSameRun()
+    {
+        const string modelSummary = "目标：完成工具任务；echo 已返回 HELLO；下一步给出最终答案。";
+        var approvalCalls = 0;
+        var echo = AIFunctionFactory.Create((string value) => value.ToUpperInvariant(), "echo");
+        var compressor = CreateUserPreservingCompressor("compressed assistant and tool history");
+        IReadOnlyList<ChatMessage>? messagesAfterCompaction = null;
+        using var client = new TestChatClient
+        {
+            ResponseHandler = (messages, options, _) =>
+            {
+                var contents = messages.SelectMany(static message => message.Contents).ToList();
+                if (contents.OfType<FunctionResultContent>()
+                    .Any(static result => result.CallId == "compact-1"))
+                {
+                    messagesAfterCompaction = messages;
+                    Assert.DoesNotContain(
+                        options!.Tools!,
+                        static tool => tool.Name == "request_context_compaction");
+                    return Task.FromResult(Response("finished"));
+                }
+
+                if (contents.OfType<FunctionResultContent>()
+                    .Any(static result => result.CallId == "echo-1"))
+                {
+                    return Task.FromResult(new ChatResponse(new ChatMessage(
+                        ChatRole.Assistant,
+                        [new FunctionCallContent(
+                            "compact-1",
+                            "request_context_compaction",
+                            new Dictionary<string, object?>
+                            {
+                                ["summary"] = modelSummary,
+                                ["reason"] = "工具链已经较长",
+                            })])));
+                }
+
+                Assert.Contains(
+                    options!.Tools!,
+                    static tool => tool.Name == "request_context_compaction");
+                return Task.FromResult(new ChatResponse(new ChatMessage(
+                    ChatRole.Assistant,
+                    [new FunctionCallContent(
+                        "echo-1",
+                        "echo",
+                        new Dictionary<string, object?> { ["value"] = "hello" })])));
+            },
+        };
+        var session = new DefaultAIAgent(client, new AgentOptions
+        {
+            SystemPromptTemplate = "system",
+            TokenCompressor = compressor,
+            DefaultChatOptions = new ChatOptions { Tools = [echo] },
+            ToolApprovalAsync = (context, _) =>
+            {
+                approvalCalls++;
+                Assert.Equal("echo", context.Function.Name);
+                return new ValueTask<bool>(true);
+            },
+        }).CreateSession(
+        [
+            new ChatMessage(ChatRole.User, "old question"),
+            new ChatMessage(ChatRole.Assistant, "old answer"),
+        ]);
+
+        var response = await session.RunAsync("use tool");
+
+        Assert.Equal("finished", response.Text);
+        Assert.Equal(1, approvalCalls);
+        Assert.Equal(1, compressor.CallCount);
+        Assert.Equal(TokenCompressionReason.ModelRequested, compressor.LastContext!.Reason);
+        Assert.DoesNotContain(
+            compressor.LastContext.Messages,
+            static message => message.Role == ChatRole.System);
+        Assert.Contains(
+            compressor.LastContext.Messages.SelectMany(static message => message.Contents),
+            static content => content is FunctionCallContent { Name: "echo" });
+        Assert.Contains(
+            compressor.LastContext.Messages.SelectMany(static message => message.Contents),
+            static content => content is FunctionResultContent { CallId: "echo-1" });
+        Assert.DoesNotContain(
+            compressor.LastContext.Messages.SelectMany(static message => message.Contents),
+            static content => content is FunctionCallContent { Name: "request_context_compaction" });
+
+        Assert.NotNull(messagesAfterCompaction);
+        Assert.Contains(messagesAfterCompaction!, message =>
+            message.Role == ChatRole.System && message.Text == "system");
+        Assert.Contains(messagesAfterCompaction!, message =>
+            message.Role == ChatRole.User && message.Text == "old question");
+        Assert.Contains(messagesAfterCompaction!, message =>
+            message.Role == ChatRole.User && message.Text == "use tool");
+        Assert.Contains(messagesAfterCompaction!, message =>
+            message.Role == ChatRole.Assistant && message.Text == "compressed assistant and tool history");
+        var checkpointCall = Assert.Single(messagesAfterCompaction!
+            .SelectMany(static message => message.Contents)
+            .OfType<FunctionCallContent>());
+        Assert.Equal("compact-1", checkpointCall.CallId);
+        Assert.Equal(modelSummary, checkpointCall.Arguments!["summary"]);
+
+        Assert.Contains(session.History, message =>
+            message.Role == ChatRole.Tool
+            && message.Contents.OfType<FunctionResultContent>()
+                .Any(static result => result.CallId == "compact-1"));
+        AssertMessage(session.History[^1], ChatRole.Assistant, "finished");
+    }
+
+    [Fact]
+    public async Task RunAsync_DoesNotCommitModelRequestedMemoryWhenContinuationFails()
+    {
+        var sessionUnits = new List<InMemoryMemoryUnit>();
+        var compressor = CreateUserPreservingCompressor(
+            "compressed",
+            [new MemoryEntry("pending", "must not be committed")]);
+        using var client = new TestChatClient
+        {
+            ResponseHandler = (messages, _, _) =>
+            {
+                if (messages.SelectMany(static message => message.Contents)
+                    .OfType<FunctionResultContent>()
+                    .Any(static result => result.CallId == "compact-fail"))
+                {
+                    throw new InvalidOperationException("continuation failed");
+                }
+
+                return Task.FromResult(new ChatResponse(new ChatMessage(
+                    ChatRole.Assistant,
+                    [new FunctionCallContent(
+                        "compact-fail",
+                        "request_context_compaction",
+                        new Dictionary<string, object?> { ["summary"] = "task checkpoint" })])));
+            },
+        };
+        var session = new DefaultAIAgent(client, new AgentOptions
+        {
+            TokenCompressor = compressor,
+            SessionMemoryUnitFactory = () =>
+            {
+                var unit = new InMemoryMemoryUnit();
+                sessionUnits.Add(unit);
+                return unit;
+            },
+        }).CreateSession(
+        [
+            new ChatMessage(ChatRole.User, "old question"),
+            new ChatMessage(ChatRole.Assistant, "old answer"),
+        ]);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => session.RunAsync("continue"));
+
+        Assert.Collection(
+            session.History,
+            message => AssertMessage(message, ChatRole.User, "old question"),
+            message => AssertMessage(message, ChatRole.Assistant, "old answer"));
+        Assert.Empty(await sessionUnits[0].RecallAsync(new MemoryRecallRequest(string.Empty)));
+    }
+
+    [Fact]
+    public async Task RunStreamAsync_HidesCompactionControlMessagesAndContinuesStreaming()
+    {
+        var compressor = CreateUserPreservingCompressor("stream compressed");
+        using var client = new TestChatClient
+        {
+            StreamingHandler = StreamResponses,
+        };
+        var session = new DefaultAIAgent(client, new AgentOptions
+        {
+            TokenCompressor = compressor,
+        }).CreateSession(
+        [
+            new ChatMessage(ChatRole.User, "old question"),
+            new ChatMessage(ChatRole.Assistant, "old answer"),
+        ]);
+        var updates = new List<ChatResponseUpdate>();
+
+        await foreach (var update in session.RunStreamAsync("continue"))
+        {
+            updates.Add(update);
+        }
+
+        Assert.Equal(2, client.StreamingResponseCallCount);
+        Assert.Single(updates);
+        Assert.Equal("stream finished", updates[0].Text);
+        Assert.Equal(1, compressor.CallCount);
+        Assert.Contains(session.History, message =>
+            message.Role == ChatRole.Tool
+            && message.Contents.OfType<FunctionResultContent>()
+                .Any(static result => result.CallId == "compact-stream"));
+        AssertMessage(session.History[^1], ChatRole.Assistant, "stream finished");
+
+        async IAsyncEnumerable<ChatResponseUpdate> StreamResponses(
+            IReadOnlyList<ChatMessage> messages,
+            ChatOptions? options,
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+        {
+            await Task.Yield();
+            cancellationToken.ThrowIfCancellationRequested();
+            if (messages.SelectMany(static message => message.Contents)
+                .OfType<FunctionResultContent>()
+                .Any(static result => result.CallId == "compact-stream"))
+            {
+                Assert.DoesNotContain(
+                    options!.Tools!,
+                    static tool => tool.Name == "request_context_compaction");
+                yield return new ChatResponseUpdate(ChatRole.Assistant, "stream finished");
+                yield break;
+            }
+
+            yield return new ChatResponseUpdate(
+                ChatRole.Assistant,
+                [new FunctionCallContent(
+                    "compact-stream",
+                    "request_context_compaction",
+                    new Dictionary<string, object?>
+                    {
+                        ["summary"] = "stream task checkpoint",
+                    })]);
+        }
+    }
+
+    [Fact]
+    public async Task RunStreamAsync_RejectsCompactionAfterAssistantContentWasPublished()
+    {
+        var compressor = CreateUserPreservingCompressor("must not run");
+        using var client = new TestChatClient
+        {
+            StreamingHandler = StreamResponses,
+        };
+        var session = new DefaultAIAgent(client, new AgentOptions
+        {
+            TokenCompressor = compressor,
+        }).CreateSession();
+        var visibleTexts = new List<string>();
+
+        await foreach (var update in session.RunStreamAsync("continue"))
+        {
+            if (!string.IsNullOrEmpty(update.Text))
+            {
+                visibleTexts.Add(update.Text);
+            }
+        }
+
+        Assert.Equal(["partial answer", "continued without compaction"], visibleTexts);
+        Assert.Equal(0, compressor.CallCount);
+
+        async IAsyncEnumerable<ChatResponseUpdate> StreamResponses(
+            IReadOnlyList<ChatMessage> messages,
+            ChatOptions? _,
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+        {
+            await Task.Yield();
+            cancellationToken.ThrowIfCancellationRequested();
+            if (messages.SelectMany(static message => message.Contents)
+                .OfType<FunctionResultContent>()
+                .Any(static result => result.CallId == "compact-late"))
+            {
+                yield return new ChatResponseUpdate(ChatRole.Assistant, "continued without compaction");
+                yield break;
+            }
+
+            yield return new ChatResponseUpdate(ChatRole.Assistant, "partial answer");
+            yield return new ChatResponseUpdate(
+                ChatRole.Assistant,
+                [new FunctionCallContent(
+                    "compact-late",
+                    "request_context_compaction",
+                    new Dictionary<string, object?> { ["summary"] = "too late" })]);
+        }
+    }
+
+    [Fact]
     public async Task AbstractAgent_CanReturnCustomSessionImplementation()
     {
         using var client = new TestChatClient();
@@ -485,6 +793,7 @@ public sealed class AgentSessionTests
         {
             Marker = "custom",
             SystemPromptTemplate = "system",
+            EnableContextCompactionTool = false,
         };
 
         var clone = Assert.IsType<CustomAgentOptions>(options.Clone());
@@ -492,6 +801,7 @@ public sealed class AgentSessionTests
         Assert.NotSame(options, clone);
         Assert.Equal("custom", clone.Marker);
         Assert.Equal("system", clone.SystemPromptTemplate);
+        Assert.False(clone.EnableContextCompactionTool);
     }
 
     private static async IAsyncEnumerable<ChatResponseUpdate> StreamTwoUpdates(
@@ -508,6 +818,23 @@ public sealed class AgentSessionTests
     private static ChatResponse Response(string text)
     {
         return new ChatResponse(new ChatMessage(ChatRole.Assistant, text));
+    }
+
+    private static TestTokenCompressor CreateUserPreservingCompressor(
+        string summary,
+        IReadOnlyList<MemoryEntry>? sessionMemories = null)
+    {
+        return new TestTokenCompressor(
+            [],
+            resultFactory: context =>
+            {
+                var messages = context.Messages
+                    .Where(static message => message.Role == ChatRole.User)
+                    .Select(static message => new ChatMessage(ChatRole.User, message.Contents.ToList()))
+                    .ToList();
+                messages.Add(new ChatMessage(ChatRole.Assistant, summary));
+                return new TokenCompressionResult(messages, sessionMemories);
+            });
     }
 
     private static void AssertMessage(ChatMessage message, ChatRole role, string text)

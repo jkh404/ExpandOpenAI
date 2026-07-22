@@ -29,6 +29,10 @@ public sealed class MemoryUnitTests
                 Assert.Equal("User prefers Chinese responses.", entry.Content);
             });
 
+        Assert.True(await memory.RemoveAsync("preference"));
+        Assert.False(await memory.RemoveAsync("preference"));
+        Assert.Empty(await memory.RecallAsync(new MemoryRecallRequest("Chinese")));
+
         await memory.ClearAsync();
         Assert.Empty(await memory.RecallAsync(new MemoryRecallRequest(string.Empty)));
     }

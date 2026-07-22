@@ -27,14 +27,6 @@ internal sealed class StreamingTranscriptFormatter
                     BeginSegment(output, SegmentKind.Text, string.Empty);
                     output.Append(text.Text);
                     break;
-                case FunctionCallContent call:
-                    BeginSegment(output, SegmentKind.Tool, string.Empty);
-                    output.Append("[工具调用: ").Append(call.Name).Append("]\n");
-                    break;
-                case FunctionResultContent result:
-                    BeginSegment(output, SegmentKind.Tool, string.Empty);
-                    output.Append("[工具结果: ").Append(result.Result).Append("]\n");
-                    break;
             }
         }
 
@@ -62,6 +54,5 @@ internal sealed class StreamingTranscriptFormatter
         None,
         Reasoning,
         Text,
-        Tool,
     }
 }

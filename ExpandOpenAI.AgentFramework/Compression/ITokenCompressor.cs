@@ -13,7 +13,8 @@ public interface ITokenCompressor
     bool ShouldCompress(IReadOnlyList<ChatMessage> messages);
 
     /// <summary>
-    /// 返回压缩后的历史和待写入记忆体的内容。结果消息不能包含 <see cref="ChatRole.System"/>。
+    /// 返回压缩后的历史和待写入记忆体的内容。结果消息不能包含 <see cref="ChatRole.System"/>，
+    /// 并应原样、按原顺序保留输入中的 User 消息。
     /// </summary>
     ValueTask<TokenCompressionResult> CompressAsync(
         TokenCompressionContext context,

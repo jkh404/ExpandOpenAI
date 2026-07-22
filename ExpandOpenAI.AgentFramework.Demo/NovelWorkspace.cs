@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Net;
+using System.Security.Cryptography;
 using System.Text;
 using Microsoft.Extensions.AI;
 
@@ -22,12 +23,15 @@ internal sealed class NovelWorkspace : IDisposable
         "list_workspace_files",
         "read_workspace_file",
         "write_workspace_file",
+        "append_workspace_file",
+        "replace_workspace_text",
         "fetch_http",
     };
 
     private readonly HttpClient _httpClient;
     private readonly bool _ownsHttpClient;
     private readonly string _rootPathWithSeparator;
+    private readonly SemaphoreSlim _writeGate = new(1, 1);
 
     public NovelWorkspace(string rootPath, HttpClient? httpClient = null)
     {
@@ -66,6 +70,14 @@ internal sealed class NovelWorkspace : IDisposable
                 (Func<string, string, bool, CancellationToken, Task<string>>)WriteTextFileAsync,
                 "write_workspace_file",
                 "在小说工作区创建或写入 .txt / .md 文件。新文件会直接创建；已有文件仅在 overwrite 为 true 时覆盖，覆盖前必须先读取原文件。"),
+            AIFunctionFactory.Create(
+                (Func<string, string, int?, CancellationToken, Task<string>>)AppendTextFileAsync,
+                "append_workspace_file",
+                "向已存在的 .txt / .md 文件末尾追加文本，适合分段写长章节。可传 expectedLengthCharacters 防止基于旧版本重复追加。"),
+            AIFunctionFactory.Create(
+                (Func<string, string, string, string?, CancellationToken, Task<string>>)ReplaceTextAsync,
+                "replace_workspace_text",
+                "在已存在的 .txt / .md 文件中精确替换唯一一段文本。可传 expectedSha256 防止覆盖用户或其他步骤的新修改。"),
             AIFunctionFactory.Create(
                 (Func<string, CancellationToken, Task<string>>)FetchHttpAsync,
                 "fetch_http",
@@ -137,7 +149,8 @@ internal sealed class NovelWorkspace : IDisposable
         var notice = truncated
             ? $"\n\n[文件内容已截断为前 {MaximumFileCharacters} 个字符]"
             : string.Empty;
-        return $"文件：{ToRelativePath(path)}\n\n{content}{notice}";
+        var sha256 = await ComputeSha256Async(path, cancellationToken).ConfigureAwait(false);
+        return $"文件：{ToRelativePath(path)}\n字符数：{content.Length}{(truncated ? "+" : string.Empty)}\nSHA-256：{sha256}\n\n{content}{notice}";
     }
 
     public async Task<string> WriteTextFileAsync(
@@ -149,26 +162,130 @@ internal sealed class NovelWorkspace : IDisposable
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(content);
-
-        var path = ResolveTextFile(relativePath);
-        var alreadyExists = File.Exists(path);
-        if (alreadyExists && !overwrite)
+        await _writeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
         {
-            throw new IOException(
-                $"文件已存在：{ToRelativePath(path)}。请先读取它，确认后将 overwrite 设为 true 才能覆盖。");
+            var path = ResolveTextFile(relativePath);
+            var alreadyExists = File.Exists(path);
+            if (alreadyExists && !overwrite)
+            {
+                throw new IOException(
+                    $"文件已存在：{ToRelativePath(path)}。请先读取它，确认后将 overwrite 设为 true 才能覆盖。");
+            }
+
+            await WriteAtomicallyAsync(path, content, cancellationToken).ConfigureAwait(false);
+            var action = alreadyExists ? "已覆盖" : "已创建";
+            var sha256 = await ComputeSha256Async(path, cancellationToken).ConfigureAwait(false);
+            return $"{action}：{ToRelativePath(path)}（{content.Length} 个字符，SHA-256：{sha256}）";
+        }
+        finally
+        {
+            _writeGate.Release();
+        }
+    }
+
+    public async Task<string> AppendTextFileAsync(
+        [Description("相对于小说工作区的已存在 .txt 或 .md 文件路径。")]
+        string relativePath,
+        [Description("要追加到文件末尾的 UTF-8 文本。")]
+        string content,
+        [Description("可选。仅当文件当前字符数与此值一致时追加，用于防止重复写入或并发覆盖。")]
+        int? expectedLengthCharacters = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(content);
+        if (content.Length == 0)
+        {
+            throw new ArgumentException("追加内容不能为空。", nameof(content));
         }
 
-        var directory = Path.GetDirectoryName(path)
-            ?? throw new InvalidOperationException("无法解析目标文件所在目录。");
-        Directory.CreateDirectory(directory);
-        await File.WriteAllTextAsync(
-            path,
-            content,
-            new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
-            cancellationToken).ConfigureAwait(false);
+        await _writeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var path = ResolveTextFile(relativePath);
+            if (!File.Exists(path))
+            {
+                throw new FileNotFoundException("追加前必须先用 write_workspace_file 创建文件。", path);
+            }
 
-        var action = alreadyExists ? "已覆盖" : "已创建";
-        return $"{action}：{ToRelativePath(path)}（{content.Length} 个字符）";
+            var current = await ReadCompleteTextAsync(path, cancellationToken).ConfigureAwait(false);
+            if (expectedLengthCharacters is not null && current.Length != expectedLengthCharacters.Value)
+            {
+                throw new IOException(
+                    $"文件版本已变化：期望 {expectedLengthCharacters.Value} 个字符，实际 {current.Length} 个字符。请重新读取后再追加。");
+            }
+
+            if (current.Length + content.Length > MaximumFileCharacters)
+            {
+                throw new IOException($"追加后文件将超过 {MaximumFileCharacters} 个字符，请拆分为新的章节或分卷文件。");
+            }
+
+            var updated = current + content;
+            await WriteAtomicallyAsync(path, updated, cancellationToken).ConfigureAwait(false);
+            var sha256 = await ComputeSha256Async(path, cancellationToken).ConfigureAwait(false);
+            return $"已追加：{ToRelativePath(path)}（新增 {content.Length} 个字符，当前 {updated.Length} 个字符，SHA-256：{sha256}）";
+        }
+        finally
+        {
+            _writeGate.Release();
+        }
+    }
+
+    public async Task<string> ReplaceTextAsync(
+        [Description("相对于小说工作区的已存在 .txt 或 .md 文件路径。")]
+        string relativePath,
+        [Description("文件中必须且只能出现一次的原文本。")]
+        string oldText,
+        [Description("用于替换原文本的新文本。")]
+        string newText,
+        [Description("可选。read_workspace_file 返回的 SHA-256；不一致时拒绝修改。")]
+        string? expectedSha256 = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(oldText);
+        ArgumentNullException.ThrowIfNull(newText);
+        await _writeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var path = ResolveTextFile(relativePath);
+            if (!File.Exists(path))
+            {
+                throw new FileNotFoundException("要替换的工作区文件不存在。", path);
+            }
+
+            var current = await ReadCompleteTextAsync(path, cancellationToken).ConfigureAwait(false);
+            var currentSha256 = await ComputeSha256Async(path, cancellationToken).ConfigureAwait(false);
+            if (!string.IsNullOrWhiteSpace(expectedSha256)
+                && !string.Equals(currentSha256, expectedSha256.Trim(), StringComparison.OrdinalIgnoreCase))
+            {
+                throw new IOException("文件 SHA-256 已变化。请重新读取最新内容后再替换。 ");
+            }
+
+            var firstIndex = current.IndexOf(oldText, StringComparison.Ordinal);
+            if (firstIndex < 0)
+            {
+                throw new IOException("文件中找不到要替换的原文本。请重新读取并提供精确片段。 ");
+            }
+
+            if (current.IndexOf(oldText, firstIndex + oldText.Length, StringComparison.Ordinal) >= 0)
+            {
+                throw new IOException("原文本在文件中出现多次，无法安全确定替换位置。请提供更长且唯一的片段。 ");
+            }
+
+            var updated = current[..firstIndex] + newText + current[(firstIndex + oldText.Length)..];
+            if (updated.Length > MaximumFileCharacters)
+            {
+                throw new IOException($"替换后文件将超过 {MaximumFileCharacters} 个字符。 ");
+            }
+
+            await WriteAtomicallyAsync(path, updated, cancellationToken).ConfigureAwait(false);
+            var updatedSha256 = await ComputeSha256Async(path, cancellationToken).ConfigureAwait(false);
+            return $"已替换：{ToRelativePath(path)}（当前 {updated.Length} 个字符，SHA-256：{updatedSha256}）";
+        }
+        finally
+        {
+            _writeGate.Release();
+        }
     }
 
     public async Task<string> FetchHttpAsync(
@@ -220,6 +337,7 @@ internal sealed class NovelWorkspace : IDisposable
 
     public void Dispose()
     {
+        _writeGate.Dispose();
         if (_ownsHttpClient)
         {
             _httpClient.Dispose();
@@ -366,6 +484,61 @@ internal sealed class NovelWorkspace : IDisposable
         return (
             output.ToString(),
             await reader.ReadAsync(buffer.AsMemory(0, 1), cancellationToken).ConfigureAwait(false) != 0);
+    }
+
+    private static async Task<string> ReadCompleteTextAsync(
+        string path,
+        CancellationToken cancellationToken)
+    {
+        var content = await File.ReadAllTextAsync(path, cancellationToken).ConfigureAwait(false);
+        if (content.Length > MaximumFileCharacters)
+        {
+            throw new IOException($"文件超过 {MaximumFileCharacters} 个字符，不能进行增量修改。 ");
+        }
+
+        return content;
+    }
+
+    private static async Task WriteAtomicallyAsync(
+        string path,
+        string content,
+        CancellationToken cancellationToken)
+    {
+        var directory = Path.GetDirectoryName(path)
+            ?? throw new InvalidOperationException("无法解析目标文件所在目录。 ");
+        Directory.CreateDirectory(directory);
+        var temporaryPath = Path.Combine(directory, $".{Path.GetFileName(path)}.{Guid.NewGuid():N}.tmp");
+        try
+        {
+            await File.WriteAllTextAsync(
+                temporaryPath,
+                content,
+                new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
+                cancellationToken).ConfigureAwait(false);
+            File.Move(temporaryPath, path, overwrite: true);
+        }
+        finally
+        {
+            if (File.Exists(temporaryPath))
+            {
+                File.Delete(temporaryPath);
+            }
+        }
+    }
+
+    private static async Task<string> ComputeSha256Async(
+        string path,
+        CancellationToken cancellationToken)
+    {
+        await using var stream = new FileStream(
+            path,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.ReadWrite,
+            bufferSize: 16_384,
+            useAsync: true);
+        var hash = await SHA256.HashDataAsync(stream, cancellationToken).ConfigureAwait(false);
+        return Convert.ToHexString(hash).ToLowerInvariant();
     }
 
     private static async Task ValidatePublicHttpUriAsync(Uri uri, CancellationToken cancellationToken)

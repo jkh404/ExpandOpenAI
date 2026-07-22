@@ -6,6 +6,8 @@
     <LangVersion>14.0</LangVersion>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <ClientAppDirectory>$(MSBuildProjectDirectory)\ClientApp</ClientAppDirectory>
+    <BuildVueFrontend Condition="'$(BuildVueFrontend)' == ''">true</BuildVueFrontend>
   </PropertyGroup>
 
   <ItemGroup>
@@ -16,5 +18,11 @@
     <ProjectReference Include="..\ExpandOpenAI\ExpandOpenAI.csproj" />
     <ProjectReference Include="..\ExpandOpenAI.AgentFramework\ExpandOpenAI.AgentFramework.csproj" />
   </ItemGroup>
+
+  <Target Name="BuildVueClient" BeforeTargets="PrepareForBuild" Condition="'$(BuildVueFrontend)' == 'true'">
+    <Error Condition="!Exists('$(ClientAppDirectory)\package-lock.json')" Text="Vue 前端缺少 package-lock.json。请先在 ClientApp 中运行 npm install。" />
+    <Exec WorkingDirectory="$(ClientAppDirectory)" Command="npm ci --no-audit --no-fund" Condition="!Exists('$(ClientAppDirectory)\node_modules\.package-lock.json')" />
+    <Exec WorkingDirectory="$(ClientAppDirectory)" Command="npm run build" />
+  </Target>
 
 </Project>

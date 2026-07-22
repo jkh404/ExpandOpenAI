@@ -89,6 +89,25 @@ public sealed class InMemoryMemoryUnit : IMemoryUnit
         return default;
     }
 
+    /// <summary>
+    /// 按标识删除一条记忆。返回是否实际删除；该能力用于宿主管理界面，不属于通用 <see cref="IMemoryUnit"/> 接口。
+    /// </summary>
+    public ValueTask<bool> RemoveAsync(
+        string id,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(id))
+        {
+            throw new ArgumentException("记忆 ID 不能为空。", nameof(id));
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        lock (_sync)
+        {
+            return new ValueTask<bool>(_memories.Remove(id));
+        }
+    }
+
     private static int Score(MemoryEntry memory, string query, IReadOnlyList<string> terms)
     {
         var searchable = memory.Metadata is null

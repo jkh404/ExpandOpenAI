@@ -20,6 +20,7 @@
   <ItemGroup>
     <ProjectReference Include="..\ExpandOpenAI\ExpandOpenAI.csproj" />
     <ProjectReference Include="..\ExpandOpenAI.AgentFramework\ExpandOpenAI.AgentFramework.csproj" />
+    <ProjectReference Include="..\OfficecliDemo\OfficecliDemo.csproj" />
   </ItemGroup>
 
 </Project>

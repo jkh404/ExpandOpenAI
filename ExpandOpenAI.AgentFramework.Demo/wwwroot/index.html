@@ -1,103 +1,14 @@
 <!doctype html>
 <html lang="zh-CN">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#121311">
   <title>墨痕 · 小说撰写智能体</title>
-  <link rel="stylesheet" href="/styles.css">
+  <script type="module" crossorigin src="/assets/app.js"></script>
+  <link rel="stylesheet" crossorigin href="/assets/app.css">
 </head>
 <body>
-  <div class="grain" aria-hidden="true"></div>
-  <div class="app-shell">
-    <aside class="sidebar">
-      <div class="brand">
-        <span class="brand-mark">墨</span>
-        <div>
-          <p class="eyebrow">EXPANDOPENAI</p>
-          <h1>墨痕</h1>
-        </div>
-      </div>
-
-      <div class="sidebar-heading">
-        <span>小说会话</span>
-        <button id="new-session" class="icon-button" title="新建小说会话">＋</button>
-      </div>
-      <nav id="session-list" class="session-list" aria-label="小说会话"></nav>
-
-      <div class="sidebar-footer">
-        <p id="workspace-label">尚未选择工作区</p>
-        <button id="open-settings" class="text-button">连接与工作区设置</button>
-      </div>
-    </aside>
-
-    <main class="writing-desk">
-      <header class="desk-header">
-        <div>
-          <p class="eyebrow">持续创作空间</p>
-          <h2 id="session-title">小说企划</h2>
-        </div>
-        <div class="live-status"><span id="status-dot"></span><span id="status-text">正在连接</span></div>
-      </header>
-
-      <section id="conversation" class="conversation" aria-live="polite"></section>
-
-      <form id="composer" class="composer">
-        <label class="sr-only" for="message">创作指令</label>
-        <textarea id="message" rows="3" placeholder="交代下一步创作：让智能体阅读、研究、写作，并自行连续调用工具…"></textarea>
-        <div class="composer-footer">
-          <span>Enter 换行 · Ctrl / ⌘ + Enter 执行</span>
-          <button id="send" type="submit">流式执行 <span>↗</span></button>
-        </div>
-      </form>
-    </main>
-
-    <aside class="inspector">
-      <header class="inspector-header">
-        <p class="eyebrow">项目检查器</p>
-        <h2>可召回资料</h2>
-      </header>
-      <div class="tabs" role="tablist" aria-label="检查器">
-        <button class="tab is-active" data-inspector="workspace" role="tab">工作区</button>
-        <button class="tab" data-inspector="session" role="tab">会话记忆</button>
-        <button class="tab" data-inspector="global" role="tab">全局记忆</button>
-      </div>
-      <section id="inspector-content" class="inspector-content"></section>
-      <p class="inspector-note">工作区文件树会自动刷新；会话记忆归档当前小说摘要；全局记忆只保存跨小说偏好。</p>
-    </aside>
-  </div>
-
-  <dialog id="settings-dialog" class="settings-dialog">
-    <form id="settings-form" method="dialog">
-      <div class="dialog-heading">
-        <div>
-          <p class="eyebrow">本机连接</p>
-          <h2>小说撰写智能体</h2>
-        </div>
-        <button id="close-settings" class="icon-button" type="button" aria-label="关闭设置">×</button>
-      </div>
-      <p class="dialog-copy">API Key 只保存在本机配置中，不会返回到浏览器。工作区内会保存会话、压缩摘要和全局记忆。</p>
-      <label>服务 URL<input id="setting-endpoint" required placeholder="https://example.com/v1"></label>
-      <label>API Key<input id="setting-api-key" type="password" placeholder="留空则保留当前密钥或使用环境变量"></label>
-      <label>Chat 模型<input id="setting-model" required placeholder="your-chat-model"></label>
-      <label>Chat 请求路径<input id="setting-path" required value="chat/completions"></label>
-      <label>小说工作区<input id="setting-workspace" required placeholder="D:\Writing\Project-Starlight"></label>
-      <label>上下文压缩阈值（tokens）
-        <input id="setting-compression-threshold" type="number" required min="8000" max="2000000" step="1000" value="100000">
-        <small class="field-hint">达到此估算值后压缩较早对话。120k 模型建议 90k–100k；1M 模型可设约 800k。</small>
-      </label>
-      <p id="settings-error" class="form-error" hidden></p>
-      <div class="dialog-actions"><button id="save-settings" type="submit">保存并打开写作台</button></div>
-    </form>
-  </dialog>
-
-  <template id="empty-state-template">
-    <div class="empty-state">
-      <span>✦</span>
-      <h3>从一条创作指令开始</h3>
-      <p>智能体会自行盘点资料、读取章节、查询公开信息，再创建或修订小说文件。</p>
-    </div>
-  </template>
-
-  <script src="/app.js" defer></script>
+  <div id="app"></div>
 </body>
 </html>

@@ -8,7 +8,8 @@ namespace ExpandOpenAI.AgentFramework;
 public sealed class TokenCompressionContext
 {
     /// <summary>
-    /// 创建压缩上下文。消息不包含系统提示和当前尚未提交的用户消息。
+    /// 创建压缩上下文。消息不包含系统提示。
+    /// <see cref="TokenCompressionReason.ModelRequested"/> 场景可能包含当前尚未提交的用户消息和本轮工具交互。
     /// </summary>
     public TokenCompressionContext(
         IReadOnlyList<ChatMessage> messages,
@@ -19,7 +20,7 @@ public sealed class TokenCompressionContext
     }
 
     /// <summary>
-    /// 获取待压缩的已提交历史。
+    /// 获取待压缩消息。实现应原样、按原顺序保留其中的 User 消息。
     /// </summary>
     public IReadOnlyList<ChatMessage> Messages { get; }
 
