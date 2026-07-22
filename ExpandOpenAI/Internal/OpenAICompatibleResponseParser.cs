@@ -85,6 +85,20 @@ internal sealed class OpenAICompatibleResponseParser
         using var document = JsonDocument.Parse(payload);
         var root = document.RootElement;
 
+        if (ParseUsage(root) is { } usage)
+        {
+            yield return new ChatResponseUpdate(
+                role: null,
+                [new UsageContent(usage) { RawRepresentation = root.Clone() }])
+            {
+                ResponseId = OpenAICompatibleJsonHelpers.GetString(root, "id"),
+                ConversationId = OpenAICompatibleJsonHelpers.GetString(root, "conversation_id"),
+                CreatedAt = OpenAICompatibleJsonHelpers.GetCreatedAt(root),
+                ModelId = OpenAICompatibleJsonHelpers.GetString(root, "model"),
+                RawRepresentation = root.Clone(),
+            };
+        }
+
         if (!root.TryGetProperty("choices", out var choicesElement) || choicesElement.ValueKind != JsonValueKind.Array)
         {
             yield break;

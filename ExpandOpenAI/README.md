@@ -96,6 +96,32 @@ var response = await client.GetResponseAsync(
 Console.WriteLine(response.Text);
 ```
 
+### 通过工厂选择协议
+
+当调用方只持有统一的模型、密钥和 Endpoint 时，可以通过 `ChatClientFactory` 创建 `IChatClient`：
+
+```csharp
+IChatClient client = ChatClientFactory.Create(
+    modelId: "gpt-4o-mini",
+    apiKey: "<your-api-key>",
+    endpoint: new Uri("https://api.openai.com/v1"),
+    protocol: OpenAICompatibleChatProtocol.Responses);
+```
+
+选择 `Responses` 时工厂创建 `OpenAICompatibleResponsesClient`，选择 `ChatCompletions` 时创建 `OpenAICompatibleChatClient`。协议参数默认为 `ChatCompletions`；两个客户端分别使用 `responses` 和 `chat/completions` 作为默认请求路径。
+
+当 `endpoint` 已经是完整请求地址时，可以选择 `Auto`：
+
+```csharp
+IChatClient client = ChatClientFactory.Create(
+    modelId: "gpt-4o-mini",
+    apiKey: "<your-api-key>",
+    endpoint: new Uri("https://api.openai.com/v1/responses"),
+    protocol: OpenAICompatibleChatProtocol.Auto);
+```
+
+`Auto` 根据 Endpoint 是否以 `/responses` 或 `/chat/completions` 结尾选择客户端，并直接请求该完整地址，不再追加默认路径。无法识别时会抛出 `ArgumentException`。需要其他供应商自定义路径时，请直接使用对应客户端的构造器或 Options。
+
 ### Responses API
 
 需要调用 OpenAI Responses API 或兼容服务时，使用 `OpenAICompatibleResponsesClient`。它同样实现 `IChatClient`，因此调用方式与 Chat Completions 客户端一致：
@@ -370,7 +396,7 @@ var reranker = new OpenAICompatibleReranker();
 
 ## 配置项说明
 
-`OpenAICompatibleChatClientOptions`、`OpenAICompatibleResponsesClientOptions`、`OpenAICompatibleEmbeddingGeneratorOptions` 和 `OpenAICompatibleRerankerOptions` 主要提供以下能力：
+`OpenAICompatibleChatClientOptions` 和 `OpenAICompatibleResponsesClientOptions` 的公共配置定义在 `OpenAICompatibleChatOptions`；它们与 `OpenAICompatibleEmbeddingGeneratorOptions`、`OpenAICompatibleRerankerOptions` 主要提供以下能力：
 
 | 配置项 | 说明 |
 | --- | --- |
