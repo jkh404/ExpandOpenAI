@@ -39,6 +39,28 @@ internal sealed class OpenAICompatibleEmbeddingRequestBuilder
         return request;
     }
 
+    public HttpRequestMessage CreateMultimodalRequestMessage(
+        IReadOnlyList<AIContent> contents,
+        EmbeddingGenerationOptions? options,
+        Action<JsonObject, IReadOnlyList<AIContent>, EmbeddingGenerationOptions?>? configureRequestBody,
+        Action<HttpRequestMessage, IReadOnlyList<AIContent>, EmbeddingGenerationOptions?>? configureRequest)
+    {
+        var requestUri = BuildRequestUri();
+        var body = CreateMultimodalRequestBody(contents, options, configureRequestBody);
+        var request = new HttpRequestMessage(HttpMethod.Post, requestUri)
+        {
+            Content = new StringContent(body.ToJsonString(_serializerOptions), Encoding.UTF8, "application/json"),
+        };
+
+        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+        AddAuthenticationHeader(request);
+        AddDefaultHeaders(request);
+
+        _options.ConfigureMultimodalRequest?.Invoke(request, contents, options);
+        configureRequest?.Invoke(request, contents, options);
+        return request;
+    }
+
     private Uri BuildRequestUri()
     {
         if (string.IsNullOrWhiteSpace(_options.RequestPath))
@@ -89,6 +111,58 @@ internal sealed class OpenAICompatibleEmbeddingRequestBuilder
         configureRequestBody?.Invoke(body, values, options);
 
         return body;
+    }
+
+    private JsonObject CreateMultimodalRequestBody(
+        IReadOnlyList<AIContent> contents,
+        EmbeddingGenerationOptions? options,
+        Action<JsonObject, IReadOnlyList<AIContent>, EmbeddingGenerationOptions?>? configureRequestBody)
+    {
+        var parameters = new JsonObject();
+        var dimensions = options?.Dimensions ?? _options.DefaultModelDimensions;
+        if (dimensions is not null)
+        {
+            parameters["dimension"] = JsonSerializer.SerializeToNode(dimensions, _serializerOptions);
+        }
+
+        var body = new JsonObject
+        {
+            ["model"] = string.IsNullOrWhiteSpace(options?.ModelId) ? _options.ModelId : options!.ModelId,
+            ["parameters"] = parameters,
+            ["input"] = new JsonObject
+            {
+                ["contents"] = SerializeMultimodalContents(contents),
+            },
+        };
+
+        MergeRequestProperties(body, _options.RequestBody);
+        MergeRequestProperties(body, options?.AdditionalProperties);
+
+        _options.ConfigureMultimodalRequestBody?.Invoke(body, contents, options);
+        configureRequestBody?.Invoke(body, contents, options);
+        return body;
+    }
+
+    private static JsonArray SerializeMultimodalContents(IReadOnlyList<AIContent> contents)
+    {
+        var serializedContents = new JsonArray();
+        foreach (var content in contents)
+        {
+            serializedContents.Add(content switch
+            {
+                TextContent text => new JsonObject { ["text"] = text.Text },
+                DataContent imageData when imageData.HasTopLevelMediaType("image") =>
+                    new JsonObject { ["image"] = imageData.Uri },
+                UriContent imageUri when imageUri.HasTopLevelMediaType("image") =>
+                    new JsonObject { ["image"] = imageUri.Uri.ToString() },
+                UriContent videoUri when videoUri.HasTopLevelMediaType("video") =>
+                    new JsonObject { ["video"] = videoUri.Uri.ToString() },
+                _ => throw new NotSupportedException(
+                    $"DashScope 多模态向量只支持 TextContent、图片 DataContent / UriContent 和视频 UriContent，当前类型为 {content.GetType().FullName}。"),
+            });
+        }
+
+        return serializedContents;
     }
 
     private void AddAuthenticationHeader(HttpRequestMessage request)

@@ -21,22 +21,10 @@ internal sealed class OpenAICompatibleEmbeddingResponseParser
 
         var modelId = OpenAICompatibleJsonHelpers.GetString(root, "model");
         var createdAt = OpenAICompatibleJsonHelpers.GetCreatedAt(root);
-        var indexedEmbeddings = new List<IndexedEmbedding>();
-        var position = 0;
-
-        foreach (var item in dataElement.EnumerateArray())
-        {
-            var index = OpenAICompatibleJsonHelpers.GetInt32(item, "index") ?? position;
-            var embedding = ParseEmbedding(item, modelId, createdAt);
-            indexedEmbeddings.Add(new IndexedEmbedding(index, position, embedding));
-            position++;
-        }
+        var indexedEmbeddings = ParseIndexedEmbeddings(dataElement, modelId, createdAt);
 
         var result = new GeneratedEmbeddings<Embedding<float>>(
-            indexedEmbeddings
-                .OrderBy(static item => item.Index)
-                .ThenBy(static item => item.Position)
-                .Select(static item => item.Embedding))
+            OrderEmbeddings(indexedEmbeddings))
         {
             Usage = ParseUsage(root),
             AdditionalProperties = OpenAICompatibleJsonHelpers.CollectAdditionalProperties(
@@ -49,6 +37,56 @@ internal sealed class OpenAICompatibleEmbeddingResponseParser
         };
 
         return result;
+    }
+
+    public GeneratedEmbeddings<Embedding<float>> ParseDashScopeMultimodalResponse(
+        JsonElement root,
+        string? modelId)
+    {
+        if (!root.TryGetProperty("output", out var outputElement)
+            || outputElement.ValueKind != JsonValueKind.Object
+            || !outputElement.TryGetProperty("embeddings", out var embeddingsElement)
+            || embeddingsElement.ValueKind != JsonValueKind.Array)
+        {
+            throw new JsonException("DashScope multimodal embedding response does not contain output.embeddings array.");
+        }
+
+        var indexedEmbeddings = ParseIndexedEmbeddings(embeddingsElement, modelId, createdAt: null);
+        return new GeneratedEmbeddings<Embedding<float>>(OrderEmbeddings(indexedEmbeddings))
+        {
+            Usage = ParseDashScopeMultimodalUsage(root),
+            AdditionalProperties = OpenAICompatibleJsonHelpers.CollectAdditionalProperties(
+                root,
+                "output",
+                "usage"),
+        };
+    }
+
+    private List<IndexedEmbedding> ParseIndexedEmbeddings(
+        JsonElement embeddingsElement,
+        string? modelId,
+        DateTimeOffset? createdAt)
+    {
+        var indexedEmbeddings = new List<IndexedEmbedding>();
+        var position = 0;
+
+        foreach (var item in embeddingsElement.EnumerateArray())
+        {
+            var index = OpenAICompatibleJsonHelpers.GetInt32(item, "index") ?? position;
+            var embedding = ParseEmbedding(item, modelId, createdAt);
+            indexedEmbeddings.Add(new IndexedEmbedding(index, position, embedding));
+            position++;
+        }
+
+        return indexedEmbeddings;
+    }
+
+    private static IEnumerable<Embedding<float>> OrderEmbeddings(IEnumerable<IndexedEmbedding> indexedEmbeddings)
+    {
+        return indexedEmbeddings
+            .OrderBy(static item => item.Index)
+            .ThenBy(static item => item.Position)
+            .Select(static item => item.Embedding);
     }
 
     private Embedding<float> ParseEmbedding(JsonElement item, string? modelId, DateTimeOffset? createdAt)
@@ -129,6 +167,21 @@ internal sealed class OpenAICompatibleEmbeddingResponseParser
         return new UsageDetails
         {
             InputTokenCount = OpenAICompatibleJsonHelpers.GetInt64(usageElement, "prompt_tokens"),
+            TotalTokenCount = OpenAICompatibleJsonHelpers.GetInt64(usageElement, "total_tokens"),
+        };
+    }
+
+    private static UsageDetails? ParseDashScopeMultimodalUsage(JsonElement root)
+    {
+        if (!root.TryGetProperty("usage", out var usageElement) || usageElement.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        return new UsageDetails
+        {
+            InputTokenCount = OpenAICompatibleJsonHelpers.GetInt64(usageElement, "input_tokens"),
+            OutputTokenCount = OpenAICompatibleJsonHelpers.GetInt64(usageElement, "output_tokens"),
             TotalTokenCount = OpenAICompatibleJsonHelpers.GetInt64(usageElement, "total_tokens"),
         };
     }

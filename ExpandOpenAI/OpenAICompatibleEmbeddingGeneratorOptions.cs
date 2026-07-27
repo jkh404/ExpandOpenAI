@@ -39,6 +39,16 @@ public class OpenAICompatibleEmbeddingGeneratorOptions
 
     public Action<JsonObject, IReadOnlyList<string>, EmbeddingGenerationOptions?>? ConfigureRequestBody { get; init; }
 
+    /// <summary>
+    /// 配置 DashScope 多模态向量请求体。
+    /// </summary>
+    public Action<JsonObject, IReadOnlyList<AIContent>, EmbeddingGenerationOptions?>? ConfigureMultimodalRequestBody { get; init; }
+
+    /// <summary>
+    /// 配置 DashScope 多模态向量请求。
+    /// </summary>
+    public Action<HttpRequestMessage, IReadOnlyList<AIContent>, EmbeddingGenerationOptions?>? ConfigureMultimodalRequest { get; init; }
+
     public OpenAICompatibleHttpRetryOptions RetryOptions { get; init; } = new OpenAICompatibleHttpRetryOptions();
 
     public static OpenAICompatibleEmbeddingGeneratorOptions FromEnvironment()

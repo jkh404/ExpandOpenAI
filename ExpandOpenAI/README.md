@@ -12,6 +12,7 @@
 - 提供 OpenAI Compatible `/reranks` 重排序客户端
 - 支持普通响应和流式响应
 - 支持 OpenAI Compatible embeddings 请求
+- 支持 DashScope 多模态向量的 `input.contents` 请求与 `output.embeddings` 响应
 - 支持 `ChatOptions` 常见参数映射
 - 支持工具声明、工具调用和工具结果消息
 - 支持 `reasoning` / `reasoning_content` 解析为 `TextReasoningContent`
@@ -274,6 +275,54 @@ foreach (var item in embeddings)
     Console.WriteLine(item.Vector.Length);
 }
 ```
+
+### DashScope 多模态向量
+
+DashScope 的多模态向量端点不是 OpenAI Compatible `/embeddings` 协议。使用 `GenerateMultimodalAsync` 传入 `Microsoft.Extensions.AI` 内容对象时，客户端会发送 `input.contents`，并解析返回的 `output.embeddings`。
+
+```csharp
+using ExpandOpenAI;
+using Microsoft.Extensions.AI;
+
+using var generator = new OpenAICompatibleEmbeddingGenerator(
+    new OpenAICompatibleEmbeddingGeneratorOptions
+    {
+        Endpoint = new Uri(
+            "https://<workspace>.cn-beijing.maas.aliyuncs.com/api/v1/services/embeddings/multimodal-embedding/multimodal-embedding"),
+        RequestPath = string.Empty,
+        ApiKey = "<your-api-key>",
+        ModelId = "tongyi-embedding-vision-plus",
+    });
+
+var embeddings = await generator.GenerateMultimodalAsync(
+[
+    new TextContent("一只在草地上奔跑的狗"),
+    new UriContent("https://example.com/dog.png", "image/png"),
+]);
+
+foreach (var embedding in embeddings)
+{
+    Console.WriteLine(embedding.Vector.Length);
+}
+```
+
+`TextContent` 会映射为 `{"text":"..."}`；图片 `UriContent` / `DataContent` 映射为 `{"image":"..."}`，视频 `UriContent` 映射为 `{"video":"..."}`。图片可以使用公开 URL 或 Data URI；视频必须使用公开 URL。每个内容对象对应 `contents` 中的一个元素，因此会返回独立向量。
+
+`EmbeddingGenerationOptions.Dimensions`（或 `DefaultModelDimensions`）会映射为 DashScope 的 `parameters.dimension`。其他模型参数可在 `ConfigureMultimodalRequestBody` 中设置：
+
+```csharp
+var generator = new OpenAICompatibleEmbeddingGenerator(
+    new OpenAICompatibleEmbeddingGeneratorOptions
+    {
+        // 省略通用配置
+        ConfigureMultimodalRequestBody = (body, _, _) =>
+        {
+            body["parameters"]!["enable_fusion"] = true;
+        },
+    });
+```
+
+详情和模型支持范围请参考 [DashScope 多模态向量 API 文档](https://help.aliyun.com/zh/model-studio/multimodal-embedding-api-reference)。
 
 如果你的向量模型支持自定义维度，可以通过 `EmbeddingGenerationOptions.Dimensions` 传入：
 

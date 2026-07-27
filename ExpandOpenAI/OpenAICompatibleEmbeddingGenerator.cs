@@ -127,6 +127,38 @@ public class OpenAICompatibleEmbeddingGenerator : IEmbeddingGenerator<string, Em
         return _responseParser.ParseResponse(document.RootElement);
     }
 
+    /// <summary>
+    /// 调用 DashScope 多模态向量接口生成文本、图片或视频的向量。
+    /// </summary>
+    /// <remarks>
+    /// 此方法使用 DashScope 的 <c>input.contents</c> 请求格式，不影响标准 OpenAI-compatible
+    /// <c>/embeddings</c> 接口使用的 <see cref="GenerateAsync(IEnumerable{string}, EmbeddingGenerationOptions?, CancellationToken)"/>。
+    /// </remarks>
+    public async Task<GeneratedEmbeddings<Embedding<float>>> GenerateMultimodalAsync(
+        IEnumerable<AIContent> contents,
+        EmbeddingGenerationOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentGuard.ThrowIfDisposed(_disposed, this);
+
+        var preparedContents = PrepareMultimodalContents(contents);
+        using var response = await HttpRetryPolicy.SendAsync(
+            _httpClient,
+            () => _requestBuilder.CreateMultimodalRequestMessage(
+                preparedContents,
+                options,
+                ConfigureMultimodalRequestBody,
+                ConfigureMultimodalRequest),
+            HttpCompletionOption.ResponseContentRead,
+            _options.RetryOptions,
+            cancellationToken).ConfigureAwait(false);
+        var payload = await ReadSuccessfulResponseAsync(response, cancellationToken).ConfigureAwait(false);
+
+        using var document = JsonDocument.Parse(payload);
+        var modelId = string.IsNullOrWhiteSpace(options?.ModelId) ? _options.ModelId : options!.ModelId;
+        return _responseParser.ParseDashScopeMultimodalResponse(document.RootElement, modelId);
+    }
+
     public object? GetService(Type serviceType, object? serviceKey = null)
     {
         ArgumentGuard.ThrowIfNull(serviceType, nameof(serviceType));
@@ -172,6 +204,24 @@ public class OpenAICompatibleEmbeddingGenerator : IEmbeddingGenerator<string, Em
         return list;
     }
 
+    protected virtual IReadOnlyList<AIContent> PrepareMultimodalContents(IEnumerable<AIContent> contents)
+    {
+        ArgumentGuard.ThrowIfNull(contents, nameof(contents));
+
+        var list = contents.ToList();
+        if (list.Count == 0)
+        {
+            throw new ArgumentException("At least one multimodal input content is required.", nameof(contents));
+        }
+
+        if (list.Any(static content => content is null))
+        {
+            throw new ArgumentException("Multimodal input contents cannot contain null.", nameof(contents));
+        }
+
+        return list;
+    }
+
     protected virtual void ConfigureRequestBody(
         System.Text.Json.Nodes.JsonObject body,
         IReadOnlyList<string> values,
@@ -182,6 +232,20 @@ public class OpenAICompatibleEmbeddingGenerator : IEmbeddingGenerator<string, Em
     protected virtual void ConfigureRequest(
         HttpRequestMessage request,
         IReadOnlyList<string> values,
+        EmbeddingGenerationOptions? options)
+    {
+    }
+
+    protected virtual void ConfigureMultimodalRequestBody(
+        System.Text.Json.Nodes.JsonObject body,
+        IReadOnlyList<AIContent> contents,
+        EmbeddingGenerationOptions? options)
+    {
+    }
+
+    protected virtual void ConfigureMultimodalRequest(
+        HttpRequestMessage request,
+        IReadOnlyList<AIContent> contents,
         EmbeddingGenerationOptions? options)
     {
     }
