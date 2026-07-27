@@ -363,3 +363,4 @@ MigrationBackup/
 FodyWeavers.xsd
 /OfficecliDemo/output
 /ExpandOpenAI.TestConsole/ExpandOpenAI.TestConsole.csproj
+/OfficecliDemo/appsettings.json
