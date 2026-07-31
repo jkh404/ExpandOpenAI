@@ -30,12 +30,18 @@ public sealed class OpenAICompatibleEmbeddingGeneratorTests
                 ModelId = "tongyi-embedding-vision-plus",
             });
 
-        var embeddings = await generator.GenerateMultimodalAsync(
+        var multimodalGenerator = Assert.IsAssignableFrom<IMultimodalEmbeddingGenerator>(
+            generator.GetService(typeof(IMultimodalEmbeddingGenerator)));
+        var standardMultimodalGenerator =
+            Assert.IsAssignableFrom<IEmbeddingGenerator<AIContent, Embedding<float>>>(generator);
+
+        var embeddings = await standardMultimodalGenerator.GenerateAsync(
         [
             new TextContent("一只在草地上奔跑的狗"),
             new UriContent("https://example.test/dog.png", "image/png"),
             new UriContent("https://example.test/dog.mp4", "video/mp4"),
         ]);
+        Assert.Same(generator, multimodalGenerator);
 
         Assert.Equal(
             "https://workspace.cn-beijing.maas.aliyuncs.com/api/v1/services/embeddings/multimodal-embedding/multimodal-embedding",
@@ -58,6 +64,25 @@ public sealed class OpenAICompatibleEmbeddingGeneratorTests
         Assert.Equal(10, embeddings.Usage?.InputTokenCount);
         Assert.Equal(3, embeddings.Usage?.OutputTokenCount);
         Assert.Equal(13, embeddings.Usage?.TotalTokenCount);
+    }
+
+    [Fact]
+    public void FromMultimodalEnvironment_UsesDedicatedEmbeddingConfiguration()
+    {
+        using var environment = new EnvironmentScope(
+            ("OPENAI_MULTIMODAL_EMBEDDING_ENDPOINT", "https://example.test/multimodal"),
+            ("OPENAI_MULTIMODAL_EMBEDDING_MODEL", "vision-embedding"),
+            ("OPENAI_MULTIMODAL_EMBEDDING_API_KEY", "vision-key"),
+            ("OPENAI_MULTIMODAL_EMBEDDING_REQUEST_PATH", ""),
+            ("OPENAI_MULTIMODAL_EMBEDDING_DIMENSIONS", "1024"));
+
+        var options = OpenAICompatibleEmbeddingGeneratorOptions.FromMultimodalEnvironment();
+
+        Assert.Equal("https://example.test/multimodal", options.Endpoint.ToString());
+        Assert.Equal("vision-embedding", options.ModelId);
+        Assert.Equal("vision-key", options.ApiKey);
+        Assert.Equal(string.Empty, options.RequestPath);
+        Assert.Equal(1024, options.DefaultModelDimensions);
     }
 
     [Fact]
@@ -122,6 +147,28 @@ public sealed class OpenAICompatibleEmbeddingGeneratorTests
             CancellationToken cancellationToken)
         {
             return handler(request);
+        }
+    }
+
+    private sealed class EnvironmentScope : IDisposable
+    {
+        private readonly Dictionary<string, string?> _previousValues = new(StringComparer.Ordinal);
+
+        public EnvironmentScope(params (string Name, string? Value)[] values)
+        {
+            foreach ((string name, string? value) in values)
+            {
+                _previousValues[name] = Environment.GetEnvironmentVariable(name);
+                Environment.SetEnvironmentVariable(name, value);
+            }
+        }
+
+        public void Dispose()
+        {
+            foreach (var pair in _previousValues)
+            {
+                Environment.SetEnvironmentVariable(pair.Key, pair.Value);
+            }
         }
     }
 }

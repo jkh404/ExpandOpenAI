@@ -3,13 +3,16 @@ using System.Globalization;
 using System.Linq.Expressions;
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using ExpandVectorStore.Qdrant;
 using Google.Protobuf.Collections;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.VectorData;
 using Qdrant.Client;
 using Qdrant.Client.Grpc;
 
-internal sealed class MyQdrantVectorStoreCollection<TKey, TRecord> : VectorStoreCollection<TKey, TRecord>
+internal sealed class MyQdrantVectorStoreCollection<TKey, TRecord> :
+    VectorStoreCollection<TKey, TRecord>,
+    IQdrantVectorStoreCollection<TKey, TRecord>
     where TKey : notnull
     where TRecord : class
 {
@@ -51,6 +54,10 @@ internal sealed class MyQdrantVectorStoreCollection<TKey, TRecord> : VectorStore
             {
                 if (await _qdrantClient.CollectionExistsAsync(Name, cancellationToken).ConfigureAwait(false))
                 {
+                    CollectionInfo info = await _qdrantClient.GetCollectionInfoAsync(Name, cancellationToken)
+                        .ConfigureAwait(false);
+                    _mapper.ValidateCollection(info);
+                    await EnsurePayloadIndexesCoreAsync(info, cancellationToken).ConfigureAwait(false);
                     return;
                 }
 
@@ -60,12 +67,17 @@ internal sealed class MyQdrantVectorStoreCollection<TKey, TRecord> : VectorStore
                         Name,
                         _mapper.CreateVectorParams(),
                         cancellationToken: cancellationToken).ConfigureAwait(false);
+                    await EnsurePayloadIndexesCoreAsync(null, cancellationToken).ConfigureAwait(false);
                 }
                 catch
                 {
                     if (await _qdrantClient.CollectionExistsAsync(Name, cancellationToken).ConfigureAwait(false))
                     {
                         // Another process may have created the collection between the existence check and create call.
+                        CollectionInfo info = await _qdrantClient.GetCollectionInfoAsync(Name, cancellationToken)
+                            .ConfigureAwait(false);
+                        _mapper.ValidateCollection(info);
+                        await EnsurePayloadIndexesCoreAsync(info, cancellationToken).ConfigureAwait(false);
                         return;
                     }
 
@@ -125,6 +137,75 @@ internal sealed class MyQdrantVectorStoreCollection<TKey, TRecord> : VectorStore
                 cancellationToken: cancellationToken));
     }
 
+    public Task DeleteAsync(
+        Expression<Func<TRecord, bool>> filter,
+        CancellationToken cancellationToken = default)
+    {
+        ThrowIfDisposed();
+        MyQdrantGuard.ThrowIfNull(filter, nameof(filter));
+
+        Filter qdrantFilter = _mapper.CreateFilter(filter) ?? new Filter();
+        return RunOperationAsync(
+            "DeleteByFilter",
+            () => _qdrantClient.DeleteAsync(
+                Name,
+                qdrantFilter,
+                wait: true,
+                cancellationToken: cancellationToken));
+    }
+
+    public async Task ValidateCollectionAsync(CancellationToken cancellationToken = default)
+    {
+        ThrowIfDisposed();
+        await RunOperationAsync(
+            "ValidateCollection",
+            async () =>
+            {
+                CollectionInfo info = await _qdrantClient.GetCollectionInfoAsync(Name, cancellationToken)
+                    .ConfigureAwait(false);
+                _mapper.ValidateCollection(info);
+            }).ConfigureAwait(false);
+    }
+
+    public async Task EnsurePayloadIndexesAsync(CancellationToken cancellationToken = default)
+    {
+        ThrowIfDisposed();
+        await RunOperationAsync(
+            "EnsurePayloadIndexes",
+            async () =>
+            {
+                CollectionInfo info = await _qdrantClient.GetCollectionInfoAsync(Name, cancellationToken)
+                    .ConfigureAwait(false);
+                await EnsurePayloadIndexesCoreAsync(info, cancellationToken).ConfigureAwait(false);
+            }).ConfigureAwait(false);
+    }
+
+    public async Task DeletePayloadIndexesAsync(CancellationToken cancellationToken = default)
+    {
+        ThrowIfDisposed();
+        await RunOperationAsync(
+            "DeletePayloadIndexes",
+            async () =>
+            {
+                CollectionInfo info = await _qdrantClient.GetCollectionInfoAsync(Name, cancellationToken)
+                    .ConfigureAwait(false);
+
+                foreach (MyQdrantPayloadIndex payloadIndex in _mapper.GetPayloadIndexes())
+                {
+                    if (!info.PayloadSchema.ContainsKey(payloadIndex.StorageName))
+                    {
+                        continue;
+                    }
+
+                    await _qdrantClient.DeletePayloadIndexAsync(
+                        Name,
+                        payloadIndex.StorageName,
+                        wait: true,
+                        cancellationToken: cancellationToken).ConfigureAwait(false);
+                }
+            }).ConfigureAwait(false);
+    }
+
     public override Task UpsertAsync(TRecord record, CancellationToken cancellationToken = default)
     {
         MyQdrantGuard.ThrowIfNull(record, nameof(record));
@@ -165,20 +246,36 @@ internal sealed class MyQdrantVectorStoreCollection<TKey, TRecord> : VectorStore
         }
 
         Filter? qdrantFilter = _mapper.CreateFilter(filter);
-        ScrollResponse response = await RunOperationAsync(
-            "Scroll",
-            () => _qdrantClient.ScrollAsync(
-                Name,
-                filter: qdrantFilter,
-                limit: checked((uint)(top + options.Skip)),
-                offset: null,
-                payloadSelector: new WithPayloadSelector { Enable = true },
-                vectorsSelector: new WithVectorsSelector { Enable = options.IncludeVectors },
-                cancellationToken: cancellationToken)).ConfigureAwait(false);
+        int batchSize = (int)Math.Min((long)top + Math.Max(options.Skip, 0), 1024);
+        var scrollOptions = new QdrantScrollOptions
+        {
+            BatchSize = Math.Max(1, batchSize),
+            Skip = options.Skip,
+            Top = top,
+            IncludeVectors = options.IncludeVectors,
+        };
+        QdrantScrollOptions effectiveScrollOptions = ValidateScrollOptions(scrollOptions);
 
-        foreach (RetrievedPoint point in response.Result.Skip(options.Skip).Take(top))
+        await foreach (RetrievedPoint point in ScrollPointsAsync(qdrantFilter, effectiveScrollOptions, cancellationToken)
+            .ConfigureAwait(false))
         {
             yield return _mapper.MapFromRetrievedPoint(point, options.IncludeVectors);
+        }
+    }
+
+    public async IAsyncEnumerable<TRecord> ScrollAsync(
+        Expression<Func<TRecord, bool>>? filter = null,
+        QdrantScrollOptions? options = null,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        ThrowIfDisposed();
+        Filter? qdrantFilter = filter is null ? null : _mapper.CreateFilter(filter);
+        QdrantScrollOptions effectiveOptions = ValidateScrollOptions(options);
+
+        await foreach (RetrievedPoint point in ScrollPointsAsync(qdrantFilter, effectiveOptions, cancellationToken)
+            .ConfigureAwait(false))
+        {
+            yield return _mapper.MapFromRetrievedPoint(point, effectiveOptions.IncludeVectors);
         }
     }
 
@@ -243,6 +340,93 @@ internal sealed class MyQdrantVectorStoreCollection<TKey, TRecord> : VectorStore
     {
         _disposed = true;
         base.Dispose(disposing);
+    }
+
+    private async Task EnsurePayloadIndexesCoreAsync(
+        CollectionInfo? knownCollectionInfo,
+        CancellationToken cancellationToken)
+    {
+        IReadOnlyList<MyQdrantPayloadIndex> payloadIndexes = _mapper.GetPayloadIndexes();
+        if (payloadIndexes.Count == 0)
+        {
+            return;
+        }
+
+        CollectionInfo info = knownCollectionInfo
+            ?? await _qdrantClient.GetCollectionInfoAsync(Name, cancellationToken).ConfigureAwait(false);
+
+        _mapper.ValidatePayloadIndexes(info);
+        foreach (MyQdrantPayloadIndex payloadIndex in payloadIndexes)
+        {
+            if (info.PayloadSchema.ContainsKey(payloadIndex.StorageName))
+            {
+                continue;
+            }
+
+            await _qdrantClient.CreatePayloadIndexAsync(
+                Name,
+                payloadIndex.StorageName,
+                payloadIndex.SchemaType,
+                wait: true,
+                cancellationToken: cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private async IAsyncEnumerable<RetrievedPoint> ScrollPointsAsync(
+        Filter? qdrantFilter,
+        QdrantScrollOptions options,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        int skipped = 0;
+        int yielded = 0;
+        PointId? offset = null;
+
+        while (true)
+        {
+            int requested = options.Top is null
+                ? options.BatchSize
+                : Math.Min(options.BatchSize, options.Top.Value - yielded + Math.Max(0, options.Skip - skipped));
+
+            if (requested <= 0)
+            {
+                yield break;
+            }
+
+            ScrollResponse response = await RunOperationAsync(
+                "Scroll",
+                () => _qdrantClient.ScrollAsync(
+                    Name,
+                    filter: qdrantFilter,
+                    limit: checked((uint)requested),
+                    offset: offset,
+                    payloadSelector: new WithPayloadSelector { Enable = true },
+                    vectorsSelector: new WithVectorsSelector { Enable = options.IncludeVectors },
+                    cancellationToken: cancellationToken)).ConfigureAwait(false);
+
+            foreach (RetrievedPoint point in response.Result)
+            {
+                if (skipped < options.Skip)
+                {
+                    skipped++;
+                    continue;
+                }
+
+                if (options.Top is not null && yielded >= options.Top.Value)
+                {
+                    yield break;
+                }
+
+                yielded++;
+                yield return point;
+            }
+
+            if (!HasPointId(response.NextPageOffset) || response.Result.Count == 0)
+            {
+                yield break;
+            }
+
+            offset = response.NextPageOffset;
+        }
     }
 
     private async Task RunOperationAsync(string operationName, Func<Task> operation)
@@ -315,6 +499,33 @@ internal sealed class MyQdrantVectorStoreCollection<TKey, TRecord> : VectorStore
                 "MyQdrantVectorStoreCollection currently supports one unnamed vector property per record.");
         }
     }
+
+    private static QdrantScrollOptions ValidateScrollOptions(QdrantScrollOptions? options)
+    {
+        options ??= new QdrantScrollOptions();
+
+        if (options.BatchSize <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(options), options.BatchSize, "BatchSize must be greater than zero.");
+        }
+
+        if (options.Skip < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(options), options.Skip, "Skip cannot be negative.");
+        }
+
+        if (options.Top is <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(options), options.Top, "Top must be greater than zero when set.");
+        }
+
+        return options;
+    }
+
+    private static bool HasPointId(PointId? pointId)
+    {
+        return pointId is not null && pointId.PointIdOptionsCase != PointId.PointIdOptionsOneofCase.None;
+    }
 }
 
 internal sealed class MyQdrantRecordMapper<TKey, TRecord>
@@ -365,6 +576,56 @@ internal sealed class MyQdrantRecordMapper<TKey, TRecord>
         return new MyQdrantFilterTranslator<TRecord>(_key, _dataMembers, _vector).Translate(filter);
     }
 
+    public IReadOnlyList<MyQdrantPayloadIndex> GetPayloadIndexes()
+    {
+        return _dataMembers
+            .Where(static member => member.IsIndexed || member.IsFullTextIndexed)
+            .Select(static member => new MyQdrantPayloadIndex(
+                member.StorageName,
+                MapPayloadSchemaType(member)))
+            .ToArray();
+    }
+
+    public void ValidateCollection(CollectionInfo collectionInfo)
+    {
+        MyQdrantGuard.ThrowIfNull(collectionInfo, nameof(collectionInfo));
+
+        VectorParams expected = CreateVectorParams();
+        VectorParams actual = GetUnnamedVectorParams(collectionInfo);
+        if (actual.Size != expected.Size)
+        {
+            throw new InvalidOperationException(
+                $"Qdrant collection vector size mismatch. Collection has {actual.Size} dimensions, but the record definition requires {expected.Size}.");
+        }
+
+        if (actual.Distance != expected.Distance)
+        {
+            throw new InvalidOperationException(
+                $"Qdrant collection distance mismatch. Collection uses '{actual.Distance}', but the record definition requires '{expected.Distance}'.");
+        }
+
+        ValidatePayloadIndexes(collectionInfo);
+    }
+
+    public void ValidatePayloadIndexes(CollectionInfo collectionInfo)
+    {
+        MyQdrantGuard.ThrowIfNull(collectionInfo, nameof(collectionInfo));
+
+        foreach (MyQdrantPayloadIndex expected in GetPayloadIndexes())
+        {
+            if (!collectionInfo.PayloadSchema.TryGetValue(expected.StorageName, out PayloadSchemaInfo? actual))
+            {
+                continue;
+            }
+
+            if (actual.DataType != expected.SchemaType)
+            {
+                throw new InvalidOperationException(
+                    $"Qdrant payload index '{expected.StorageName}' has type '{actual.DataType}', but the record definition requires '{expected.SchemaType}'.");
+            }
+        }
+    }
+
     public PointStruct MapToPointStruct(TRecord record)
     {
         return new PointStruct
@@ -411,6 +672,115 @@ internal sealed class MyQdrantRecordMapper<TKey, TRecord>
         return record;
     }
 
+    private static VectorParams GetUnnamedVectorParams(CollectionInfo collectionInfo)
+    {
+        VectorsConfig? vectorsConfig = collectionInfo.Config?.Params?.VectorsConfig;
+        if (vectorsConfig?.ConfigCase != VectorsConfig.ConfigOneofCase.Params || vectorsConfig.Params is null)
+        {
+            throw new InvalidOperationException("Qdrant collection must use a single unnamed dense vector.");
+        }
+
+        return vectorsConfig.Params;
+    }
+
+    private static PayloadSchemaType MapPayloadSchemaType(MyQdrantDataMember member)
+    {
+        Type type = UnwrapPayloadIndexType(member.Type);
+        if (member.IsFullTextIndexed)
+        {
+            if (type != typeof(string))
+            {
+                throw new NotSupportedException(
+                    $"Qdrant full-text payload index '{member.StorageName}' requires a string field, but '{member.Type.Name}' was configured.");
+            }
+
+            return PayloadSchemaType.Text;
+        }
+
+        if (type == typeof(string))
+        {
+            return PayloadSchemaType.Keyword;
+        }
+
+        if (type == typeof(Guid))
+        {
+            return PayloadSchemaType.Uuid;
+        }
+
+        if (type == typeof(bool))
+        {
+            return PayloadSchemaType.Bool;
+        }
+
+        if (IsIntegerType(type))
+        {
+            return PayloadSchemaType.Integer;
+        }
+
+        if (IsFloatingPointType(type))
+        {
+            return PayloadSchemaType.Float;
+        }
+
+        if (type == typeof(DateTime) || type == typeof(DateTimeOffset) || IsDateOnlyType(type))
+        {
+            return PayloadSchemaType.Datetime;
+        }
+
+        throw new NotSupportedException(
+            $"Qdrant payload index '{member.StorageName}' does not support field type '{member.Type.FullName}'.");
+    }
+
+    private static Type UnwrapPayloadIndexType(Type type)
+    {
+        Type unwrapped = Nullable.GetUnderlyingType(type) ?? type;
+        if (unwrapped.IsArray)
+        {
+            return Nullable.GetUnderlyingType(unwrapped.GetElementType()!) ?? unwrapped.GetElementType()!;
+        }
+
+        if (unwrapped != typeof(string) && unwrapped.IsGenericType)
+        {
+            Type definition = unwrapped.GetGenericTypeDefinition();
+            if (definition == typeof(IEnumerable<>) ||
+                definition == typeof(IReadOnlyCollection<>) ||
+                definition == typeof(IReadOnlyList<>) ||
+                definition == typeof(ICollection<>) ||
+                definition == typeof(IList<>) ||
+                definition == typeof(List<>))
+            {
+                Type itemType = unwrapped.GetGenericArguments()[0];
+                return Nullable.GetUnderlyingType(itemType) ?? itemType;
+            }
+        }
+
+        return unwrapped;
+    }
+
+    private static bool IsIntegerType(Type type)
+    {
+        return type == typeof(byte) ||
+            type == typeof(sbyte) ||
+            type == typeof(short) ||
+            type == typeof(ushort) ||
+            type == typeof(int) ||
+            type == typeof(uint) ||
+            type == typeof(long) ||
+            type == typeof(ulong);
+    }
+
+    private static bool IsFloatingPointType(Type type)
+    {
+        return type == typeof(float) ||
+            type == typeof(double) ||
+            type == typeof(decimal);
+    }
+
+    private static bool IsDateOnlyType(Type type)
+    {
+        return type.FullName == "System.DateOnly";
+    }
+
     private static MyQdrantRecordMapper<TKey, TRecord> CreateFromDefinition(
         VectorStoreCollectionDefinition definition,
         bool isDictionaryRecord)
@@ -433,8 +803,14 @@ internal sealed class MyQdrantRecordMapper<TKey, TRecord>
                     key = new MyQdrantKeyMember(property.Name, storageName, propertyType, recordProperty);
                     break;
 
-                case VectorStoreDataProperty:
-                    dataMembers.Add(new MyQdrantDataMember(property.Name, storageName, propertyType, recordProperty));
+                case VectorStoreDataProperty dataProperty:
+                    dataMembers.Add(new MyQdrantDataMember(
+                        property.Name,
+                        storageName,
+                        propertyType,
+                        recordProperty,
+                        dataProperty.IsIndexed,
+                        dataProperty.IsFullTextIndexed));
                     break;
 
                 case VectorStoreVectorProperty vectorProperty:
@@ -485,7 +861,9 @@ internal sealed class MyQdrantRecordMapper<TKey, TRecord>
                     property.Name,
                     GetStorageName(property.Name, dataAttribute.StorageName),
                     property.PropertyType,
-                    property));
+                    property,
+                    dataAttribute.IsIndexed,
+                    dataAttribute.IsFullTextIndexed));
                 continue;
             }
 
@@ -673,7 +1051,9 @@ internal sealed record MyQdrantDataMember(
     string Name,
     string StorageName,
     Type Type,
-    PropertyInfo? Property) : MyQdrantMember(Name, StorageName, Type, Property);
+    PropertyInfo? Property,
+    bool IsIndexed,
+    bool IsFullTextIndexed) : MyQdrantMember(Name, StorageName, Type, Property);
 
 internal sealed record MyQdrantVectorMember(
     string Name,
@@ -682,6 +1062,10 @@ internal sealed record MyQdrantVectorMember(
     PropertyInfo? Property,
     int Dimensions,
     string? DistanceFunction) : MyQdrantMember(Name, StorageName, Type, Property);
+
+internal sealed record MyQdrantPayloadIndex(
+    string StorageName,
+    PayloadSchemaType SchemaType);
 
 internal static class MyQdrantVectorValueReader
 {

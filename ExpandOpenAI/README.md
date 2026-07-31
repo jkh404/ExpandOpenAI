@@ -1,6 +1,6 @@
 # ExpandOpenAI
 
-`ExpandOpenAI` 是一个面向 OpenAI Compatible 接口的轻量级 `IChatClient`、`IEmbeddingGenerator<string, Embedding<float>>` 与 reranking 实现，基于 `Microsoft.Extensions.AI` 构建，适合接入 OpenAI、阿里云 DashScope 兼容模式，以及其他遵循 `/chat/completions`、`/responses`、`/embeddings`、`/reranks` 协议的模型服务。
+`ExpandOpenAI` 是一个面向 OpenAI Compatible 接口的轻量级 `IChatClient`、`IEmbeddingGenerator<string, Embedding<float>>`、多模态 embedding 与 reranking 实现，基于 `Microsoft.Extensions.AI` 构建，适合接入 OpenAI、阿里云 DashScope 兼容模式，以及其他遵循 `/chat/completions`、`/responses`、`/embeddings`、`/reranks` 协议的模型服务。
 
 它的目标不是重新发明一套 SDK，而是把“兼容 OpenAI 的 HTTP 接口”包装成标准的 `IChatClient`、`IEmbeddingGenerator` 和轻量 reranker，方便你继续使用 `ChatMessage`、`ChatOptions`、流式输出、工具调用、多模态内容、向量生成和重排序。
 
@@ -9,6 +9,7 @@
 - 实现 `Microsoft.Extensions.AI.IChatClient`
 - 同时提供 Chat Completions 和 Responses API 两种 `IChatClient` 实现
 - 实现 `Microsoft.Extensions.AI.IEmbeddingGenerator<string, Embedding<float>>`
+- 多模态向量同时提供 `IMultimodalEmbeddingGenerator` 和 `IEmbeddingGenerator<AIContent, Embedding<float>>`
 - 提供 OpenAI Compatible `/reranks` 重排序客户端
 - 支持普通响应和流式响应
 - 支持 OpenAI Compatible embeddings 请求
@@ -278,7 +279,7 @@ foreach (var item in embeddings)
 
 ### DashScope 多模态向量
 
-DashScope 的多模态向量端点不是 OpenAI Compatible `/embeddings` 协议。使用 `GenerateMultimodalAsync` 传入 `Microsoft.Extensions.AI` 内容对象时，客户端会发送 `input.contents`，并解析返回的 `output.embeddings`。
+DashScope 的多模态向量端点不是 OpenAI Compatible `/embeddings` 协议。使用 `IMultimodalEmbeddingGenerator.GenerateMultimodalAsync` 或 `IEmbeddingGenerator<AIContent, Embedding<float>>.GenerateAsync` 传入 `Microsoft.Extensions.AI` 内容对象时，客户端会发送 `input.contents`，并解析返回的 `output.embeddings`。
 
 ```csharp
 using ExpandOpenAI;
@@ -294,7 +295,8 @@ using var generator = new OpenAICompatibleEmbeddingGenerator(
         ModelId = "tongyi-embedding-vision-plus",
     });
 
-var embeddings = await generator.GenerateMultimodalAsync(
+IMultimodalEmbeddingGenerator multimodalGenerator = generator;
+var embeddings = await multimodalGenerator.GenerateMultimodalAsync(
 [
     new TextContent("一只在草地上奔跑的狗"),
     new UriContent("https://example.com/dog.png", "image/png"),
@@ -304,6 +306,17 @@ foreach (var embedding in embeddings)
 {
     Console.WriteLine(embedding.Vector.Length);
 }
+```
+
+如果你的上层 adapter 想继续使用 `Microsoft.Extensions.AI` 的泛型接口，也可以这样调用：
+
+```csharp
+IEmbeddingGenerator<AIContent, Embedding<float>> multimodalGenerator = generator;
+var embeddings = await multimodalGenerator.GenerateAsync(
+[
+    new TextContent("产品说明"),
+    new UriContent("https://example.com/product.png", "image/png"),
+]);
 ```
 
 `TextContent` 会映射为 `{"text":"..."}`；图片 `UriContent` / `DataContent` 映射为 `{"image":"..."}`，视频 `UriContent` 映射为 `{"video":"..."}`。图片可以使用公开 URL 或 Data URI；视频必须使用公开 URL。每个内容对象对应 `contents` 中的一个元素，因此会返回独立向量。
@@ -366,6 +379,19 @@ var generator = new OpenAICompatibleEmbeddingGenerator(
 
 ```csharp
 var generator = new OpenAICompatibleEmbeddingGenerator();
+```
+
+多模态向量可以使用独立环境变量，避免和标准文本 `/embeddings` 配置混用：
+
+- `OPENAI_MULTIMODAL_EMBEDDING_ENDPOINT`，未设置时回退到 `OPENAI_ENDPOINT`
+- `OPENAI_MULTIMODAL_EMBEDDING_MODEL`，未设置时回退到 `OPENAI_EMBEDDING_MODEL` 或 `OPENAI_MODEL`
+- `OPENAI_MULTIMODAL_EMBEDDING_API_KEY`，未设置时回退到 `OPENAI_API_KEY`
+- `OPENAI_MULTIMODAL_EMBEDDING_REQUEST_PATH`：可选，默认值为空字符串，适合直接传完整 DashScope 多模态端点
+- `OPENAI_MULTIMODAL_EMBEDDING_DIMENSIONS`：可选，映射为 DashScope `parameters.dimension`
+
+```csharp
+using var generator = new OpenAICompatibleEmbeddingGenerator(
+    OpenAICompatibleEmbeddingGeneratorOptions.FromMultimodalEnvironment());
 ```
 
 ## 重排序模型

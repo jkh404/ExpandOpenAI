@@ -7,13 +7,21 @@ namespace ExpandOpenAI;
 /// <summary>
 /// OpenAI-compatible embedding generator for Microsoft.Extensions.AI.
 /// </summary>
-public class OpenAICompatibleEmbeddingGenerator : IEmbeddingGenerator<string, Embedding<float>>
+public class OpenAICompatibleEmbeddingGenerator :
+    IEmbeddingGenerator<string, Embedding<float>>,
+    IEmbeddingGenerator<AIContent, Embedding<float>>,
+    IMultimodalEmbeddingGenerator
 {
     public const string ApiKeyEnvironmentVariable = OpenAICompatibleEmbeddingGeneratorOptions.ApiKeyEnvironmentVariable;
     public const string ModelEnvironmentVariable = OpenAICompatibleEmbeddingGeneratorOptions.ModelEnvironmentVariable;
     public const string ModelFallbackEnvironmentVariable = OpenAICompatibleEmbeddingGeneratorOptions.ModelFallbackEnvironmentVariable;
     public const string EndpointEnvironmentVariable = OpenAICompatibleEmbeddingGeneratorOptions.EndpointEnvironmentVariable;
     public const string RequestPathEnvironmentVariable = OpenAICompatibleEmbeddingGeneratorOptions.RequestPathEnvironmentVariable;
+    public const string MultimodalApiKeyEnvironmentVariable = OpenAICompatibleEmbeddingGeneratorOptions.MultimodalApiKeyEnvironmentVariable;
+    public const string MultimodalModelEnvironmentVariable = OpenAICompatibleEmbeddingGeneratorOptions.MultimodalModelEnvironmentVariable;
+    public const string MultimodalEndpointEnvironmentVariable = OpenAICompatibleEmbeddingGeneratorOptions.MultimodalEndpointEnvironmentVariable;
+    public const string MultimodalRequestPathEnvironmentVariable = OpenAICompatibleEmbeddingGeneratorOptions.MultimodalRequestPathEnvironmentVariable;
+    public const string MultimodalDimensionsEnvironmentVariable = OpenAICompatibleEmbeddingGeneratorOptions.MultimodalDimensionsEnvironmentVariable;
 
     private readonly HttpClient _httpClient;
     private readonly bool _disposeHttpClient;
@@ -103,6 +111,16 @@ public class OpenAICompatibleEmbeddingGenerator : IEmbeddingGenerator<string, Em
         }
     }
 
+    public async Task<Embedding<float>> GenerateAsync(
+        string value,
+        EmbeddingGenerationOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        GeneratedEmbeddings<Embedding<float>> embeddings =
+            await GenerateAsync([value], options, cancellationToken).ConfigureAwait(false);
+        return embeddings[0];
+    }
+
     public async Task<GeneratedEmbeddings<Embedding<float>>> GenerateAsync(
         IEnumerable<string> values,
         EmbeddingGenerationOptions? options = null,
@@ -125,6 +143,16 @@ public class OpenAICompatibleEmbeddingGenerator : IEmbeddingGenerator<string, Em
 
         using var document = JsonDocument.Parse(payload);
         return _responseParser.ParseResponse(document.RootElement);
+    }
+
+    public async Task<Embedding<float>> GenerateAsync(
+        AIContent content,
+        EmbeddingGenerationOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        GeneratedEmbeddings<Embedding<float>> embeddings =
+            await GenerateMultimodalAsync([content], options, cancellationToken).ConfigureAwait(false);
+        return embeddings[0];
     }
 
     /// <summary>
@@ -157,6 +185,14 @@ public class OpenAICompatibleEmbeddingGenerator : IEmbeddingGenerator<string, Em
         using var document = JsonDocument.Parse(payload);
         var modelId = string.IsNullOrWhiteSpace(options?.ModelId) ? _options.ModelId : options!.ModelId;
         return _responseParser.ParseDashScopeMultimodalResponse(document.RootElement, modelId);
+    }
+
+    async Task<GeneratedEmbeddings<Embedding<float>>> IEmbeddingGenerator<AIContent, Embedding<float>>.GenerateAsync(
+        IEnumerable<AIContent> values,
+        EmbeddingGenerationOptions? options,
+        CancellationToken cancellationToken)
+    {
+        return await GenerateMultimodalAsync(values, options, cancellationToken).ConfigureAwait(false);
     }
 
     public object? GetService(Type serviceType, object? serviceKey = null)

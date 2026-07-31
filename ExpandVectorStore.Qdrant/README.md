@@ -7,10 +7,14 @@ This package lets you use Qdrant through the standard `VectorStore` and `VectorS
 ## Features
 
 - Create, delete, list, and open Qdrant collections.
+- Validate existing collection vector size and distance function against the record definition.
 - Upsert, retrieve, delete, scroll, and vector search records.
 - Translate common LINQ filters to Qdrant filters for scroll and vector search.
+- Delete records by translated Qdrant filters without reading ids first.
+- Read all matching records through Qdrant cursor-based scroll.
 - Map records from `VectorStoreKey`, `VectorStoreData`, and `VectorStoreVector` attributes.
 - Use dynamic dictionary records with `VectorStoreCollectionDefinition`.
+- Create and delete payload indexes for data properties marked as indexed or full-text indexed.
 - Serialize common payload values, including strings, numbers, booleans, `Guid`, `DateTime`, `DateTimeOffset`, `DateOnly`, arrays, and lists.
 - Use `ReadOnlyMemory<float>`, `float[]`, or `Embedding<float>` for vectors.
 
@@ -57,10 +61,10 @@ public sealed class Product
     [VectorStoreData]
     public string DataId { get; set; } = string.Empty;
 
-    [VectorStoreData]
+    [VectorStoreData(IsIndexed = true)]
     public string Name { get; set; } = string.Empty;
 
-    [VectorStoreData]
+    [VectorStoreData(IsFullTextIndexed = true)]
     public string Description { get; set; } = string.Empty;
 
     [VectorStoreVector(1536, DistanceFunction = DistanceFunction.CosineSimilarity)]
@@ -79,7 +83,31 @@ The provider translates common expressions into Qdrant filters:
 - Text matching: `record.Description.Contains("notebook")`.
 - Null checks: `record.OptionalValue == null` and `record.OptionalValue != null`.
 
-The same filter translation is used by `GetAsync(filter, top, ...)` and `SearchAsync(vector, top, new VectorSearchOptions<TRecord> { Filter = ... })`.
+The same filter translation is used by `GetAsync(filter, top, ...)`, `SearchAsync(vector, top, new VectorSearchOptions<TRecord> { Filter = ... })`, and Qdrant-specific filter delete.
+
+## Qdrant-specific operations
+
+The standard `VectorStoreCollection<TKey, TRecord>` abstraction does not expose every Qdrant operation. Use `GetService` to access the provider-specific interface when you need collection validation, payload index lifecycle, full cursor scroll, or native filter delete:
+
+```csharp
+var qdrantCollection =
+    (IQdrantVectorStoreCollection<ulong, Product>)collection.GetService(
+        typeof(IQdrantVectorStoreCollection<ulong, Product>))!;
+
+await qdrantCollection.ValidateCollectionAsync();
+await qdrantCollection.EnsurePayloadIndexesAsync();
+
+await foreach (var product in qdrantCollection.ScrollAsync(
+    product => product.Description.Contains("notebook"),
+    new QdrantScrollOptions { BatchSize = 512 }))
+{
+    Console.WriteLine(product.Name);
+}
+
+await qdrantCollection.DeleteAsync(product => product.DataId == "obsolete");
+```
+
+`EnsureCollectionExistsAsync()` also validates an existing collection before returning. If the Qdrant collection already exists with a different vector size, distance function, or managed payload index type, the provider throws instead of silently using the wrong vector space. Missing payload indexes are created automatically for `[VectorStoreData(IsIndexed = true)]` and `[VectorStoreData(IsFullTextIndexed = true)]` properties.
 
 ## Connection options
 
