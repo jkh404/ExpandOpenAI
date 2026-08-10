@@ -86,7 +86,7 @@ public class OpenAICompatibleEmbeddingGenerator :
         _options = options;
         _serializerOptions = options.SerializerOptions ?? new JsonSerializerOptions(AIJsonUtilities.DefaultOptions);
         _requestBuilder = new OpenAICompatibleEmbeddingRequestBuilder(_options, _serializerOptions);
-        _responseParser = new OpenAICompatibleEmbeddingResponseParser(_serializerOptions);
+        _responseParser = new OpenAICompatibleEmbeddingResponseParser();
     }
 
     private static HttpClient CreateHttpClient(HttpMessageHandler httpMessageHandler, bool disposeHandler, TimeSpan? timeout = null)
@@ -142,7 +142,8 @@ public class OpenAICompatibleEmbeddingGenerator :
         var payload = await ReadSuccessfulResponseAsync(response, cancellationToken).ConfigureAwait(false);
 
         using var document = JsonDocument.Parse(payload);
-        return _responseParser.ParseResponse(document.RootElement);
+        var modelId = string.IsNullOrWhiteSpace(options?.ModelId) ? _options.ModelId : options!.ModelId;
+        return _responseParser.ParseResponse(document.RootElement, modelId);
     }
 
     public async Task<Embedding<float>> GenerateAsync(

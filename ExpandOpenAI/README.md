@@ -13,7 +13,7 @@
 - 提供 OpenAI Compatible `/reranks` 重排序客户端
 - 支持普通响应和流式响应
 - 支持 OpenAI Compatible embeddings 请求
-- 支持 DashScope 多模态向量的 `input.contents` 请求与 `output.embeddings` 响应
+- 支持 DashScope 向量的 `output.embeddings` 响应；文本 `GenerateAsync` 与多模态 `GenerateMultimodalAsync` 均可解析
 - 支持 `ChatOptions` 常见参数映射
 - 支持工具声明、工具调用和工具结果消息
 - 支持 `reasoning` / `reasoning_content` 解析为 `TextReasoningContent`
@@ -276,6 +276,8 @@ foreach (var item in embeddings)
     Console.WriteLine(item.Vector.Length);
 }
 ```
+
+`GenerateAsync` 默认发送 OpenAI Compatible `/embeddings` 风格请求，响应解析同时兼容 OpenAI 的 `data[].embedding` 和 DashScope 的 `output.embeddings[].embedding`。因此配置 DashScope 格式 embedding 模型时，纯文本向量仍可继续走 `IEmbeddingGenerator<string, Embedding<float>>`。
 
 ### DashScope 多模态向量
 

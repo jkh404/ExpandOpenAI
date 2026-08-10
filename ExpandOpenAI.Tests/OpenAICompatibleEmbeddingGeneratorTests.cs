@@ -67,6 +67,43 @@ public sealed class OpenAICompatibleEmbeddingGeneratorTests
     }
 
     [Fact]
+    public async Task GenerateAsync_ParsesDashScopeOutputEmbeddingsResponse()
+    {
+        string? requestBody = null;
+        using var handler = new DelegateHttpMessageHandler(async request =>
+        {
+            requestBody = await request.Content!.ReadAsStringAsync();
+            return JsonResponse(DashScopeTextEmbeddingResponseJson);
+        });
+        using var generator = new OpenAICompatibleEmbeddingGenerator(
+            handler,
+            new OpenAICompatibleEmbeddingGeneratorOptions
+            {
+                Endpoint = new Uri("https://example.test/v1"),
+                ModelId = "qwen3-vl-embedding",
+            });
+
+        var embeddings = await generator.GenerateAsync(
+        [
+            "第一段文本",
+            "第二段文本",
+        ]);
+
+        using var requestDocument = JsonDocument.Parse(Assert.IsType<string>(requestBody));
+        var root = requestDocument.RootElement;
+        Assert.Equal("qwen3-vl-embedding", root.GetProperty("model").GetString());
+        Assert.Equal("第一段文本", root.GetProperty("input")[0].GetString());
+        Assert.Equal("第二段文本", root.GetProperty("input")[1].GetString());
+
+        Assert.Equal(2, embeddings.Count);
+        Assert.Equal(0.1f, embeddings[0].Vector.Span[0]);
+        Assert.Equal(0.3f, embeddings[1].Vector.Span[0]);
+        Assert.Equal("qwen3-vl-embedding", embeddings[0].ModelId);
+        Assert.Equal(8, embeddings.Usage?.InputTokenCount);
+        Assert.Equal(8, embeddings.Usage?.TotalTokenCount);
+    }
+
+    [Fact]
     public void FromMultimodalEnvironment_UsesDedicatedEmbeddingConfiguration()
     {
         using var environment = new EnvironmentScope(
@@ -136,6 +173,22 @@ public sealed class OpenAICompatibleEmbeddingGeneratorTests
             "total_tokens": 13
           },
           "request_id": "request_123"
+        }
+        """;
+
+    private const string DashScopeTextEmbeddingResponseJson = """
+        {
+          "output": {
+            "embeddings": [
+              { "index": 1, "embedding": [0.3, 0.4], "type": "text" },
+              { "index": 0, "embedding": [0.1, 0.2], "type": "text" }
+            ]
+          },
+          "usage": {
+            "input_tokens": 8,
+            "total_tokens": 8
+          },
+          "request_id": "request_text_123"
         }
         """;
 

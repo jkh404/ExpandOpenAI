@@ -5,38 +5,23 @@ namespace ExpandOpenAI.Internal;
 
 internal sealed class OpenAICompatibleEmbeddingResponseParser
 {
-    private readonly JsonSerializerOptions _serializerOptions;
-
-    public OpenAICompatibleEmbeddingResponseParser(JsonSerializerOptions serializerOptions)
+    public OpenAICompatibleEmbeddingResponseParser()
     {
-        _serializerOptions = serializerOptions;
     }
 
-    public GeneratedEmbeddings<Embedding<float>> ParseResponse(JsonElement root)
+    public GeneratedEmbeddings<Embedding<float>> ParseResponse(JsonElement root, string? modelId = null)
     {
-        if (!root.TryGetProperty("data", out var dataElement) || dataElement.ValueKind != JsonValueKind.Array)
+        if (TryGetEmbeddingsArray(root, "data", out JsonElement dataElement))
         {
-            throw new JsonException("Embedding response does not contain a data array.");
+            return ParseOpenAIEmbeddingsResponse(root, dataElement, modelId);
         }
 
-        var modelId = OpenAICompatibleJsonHelpers.GetString(root, "model");
-        var createdAt = OpenAICompatibleJsonHelpers.GetCreatedAt(root);
-        var indexedEmbeddings = ParseIndexedEmbeddings(dataElement, modelId, createdAt);
-
-        var result = new GeneratedEmbeddings<Embedding<float>>(
-            OrderEmbeddings(indexedEmbeddings))
+        if (TryGetDashScopeEmbeddings(root, out JsonElement dashScopeEmbeddings))
         {
-            Usage = ParseUsage(root),
-            AdditionalProperties = OpenAICompatibleJsonHelpers.CollectAdditionalProperties(
-                root,
-                "object",
-                "data",
-                "model",
-                "created",
-                "usage"),
-        };
+            return ParseDashScopeEmbeddingsResponse(root, dashScopeEmbeddings, modelId);
+        }
 
-        return result;
+        throw new JsonException("Embedding response does not contain a data array or output.embeddings array.");
     }
 
     public GeneratedEmbeddings<Embedding<float>> ParseDashScopeMultimodalResponse(
@@ -51,15 +36,73 @@ internal sealed class OpenAICompatibleEmbeddingResponseParser
             throw new JsonException("DashScope multimodal embedding response does not contain output.embeddings array.");
         }
 
-        var indexedEmbeddings = ParseIndexedEmbeddings(embeddingsElement, modelId, createdAt: null);
+        return ParseDashScopeEmbeddingsResponse(root, embeddingsElement, modelId);
+    }
+
+    private GeneratedEmbeddings<Embedding<float>> ParseOpenAIEmbeddingsResponse(
+        JsonElement root,
+        JsonElement dataElement,
+        string? modelId)
+    {
+        string? responseModelId = OpenAICompatibleJsonHelpers.GetString(root, "model") ?? modelId;
+        DateTimeOffset? createdAt = OpenAICompatibleJsonHelpers.GetCreatedAt(root);
+        List<IndexedEmbedding> indexedEmbeddings = ParseIndexedEmbeddings(dataElement, responseModelId, createdAt);
+
         return new GeneratedEmbeddings<Embedding<float>>(OrderEmbeddings(indexedEmbeddings))
         {
-            Usage = ParseDashScopeMultimodalUsage(root),
+            Usage = ParseUsage(root),
+            AdditionalProperties = OpenAICompatibleJsonHelpers.CollectAdditionalProperties(
+                root,
+                "object",
+                "data",
+                "model",
+                "created",
+                "usage"),
+        };
+    }
+
+    private GeneratedEmbeddings<Embedding<float>> ParseDashScopeEmbeddingsResponse(
+        JsonElement root,
+        JsonElement embeddingsElement,
+        string? modelId)
+    {
+        string? responseModelId = OpenAICompatibleJsonHelpers.GetString(root, "model") ?? modelId;
+        List<IndexedEmbedding> indexedEmbeddings = ParseIndexedEmbeddings(embeddingsElement, responseModelId, createdAt: null);
+
+        return new GeneratedEmbeddings<Embedding<float>>(OrderEmbeddings(indexedEmbeddings))
+        {
+            Usage = ParseUsage(root),
             AdditionalProperties = OpenAICompatibleJsonHelpers.CollectAdditionalProperties(
                 root,
                 "output",
                 "usage"),
         };
+    }
+
+    private static bool TryGetEmbeddingsArray(JsonElement root, string propertyName, out JsonElement embeddingsElement)
+    {
+        if (root.TryGetProperty(propertyName, out embeddingsElement) &&
+            embeddingsElement.ValueKind == JsonValueKind.Array)
+        {
+            return true;
+        }
+
+        embeddingsElement = default;
+        return false;
+    }
+
+    private static bool TryGetDashScopeEmbeddings(JsonElement root, out JsonElement embeddingsElement)
+    {
+        if (root.TryGetProperty("output", out JsonElement outputElement) &&
+            outputElement.ValueKind == JsonValueKind.Object &&
+            outputElement.TryGetProperty("embeddings", out embeddingsElement) &&
+            embeddingsElement.ValueKind == JsonValueKind.Array)
+        {
+            return true;
+        }
+
+        embeddingsElement = default;
+        return false;
     }
 
     private List<IndexedEmbedding> ParseIndexedEmbeddings(
@@ -164,6 +207,24 @@ internal sealed class OpenAICompatibleEmbeddingResponseParser
             return null;
         }
 
+        UsageDetails? dashScopeUsage = ParseDashScopeUsage(usageElement);
+        if (dashScopeUsage is not null)
+        {
+            return dashScopeUsage;
+        }
+
+        return ParseOpenAIUsage(usageElement);
+    }
+
+    private static UsageDetails? ParseOpenAIUsage(JsonElement usageElement)
+    {
+        if (!usageElement.TryGetProperty("prompt_tokens", out _)
+            && !usageElement.TryGetProperty("completion_tokens", out _)
+            && !usageElement.TryGetProperty("total_tokens", out _))
+        {
+            return null;
+        }
+
         return new UsageDetails
         {
             InputTokenCount = OpenAICompatibleJsonHelpers.GetInt64(usageElement, "prompt_tokens"),
@@ -171,9 +232,11 @@ internal sealed class OpenAICompatibleEmbeddingResponseParser
         };
     }
 
-    private static UsageDetails? ParseDashScopeMultimodalUsage(JsonElement root)
+    private static UsageDetails? ParseDashScopeUsage(JsonElement usageElement)
     {
-        if (!root.TryGetProperty("usage", out var usageElement) || usageElement.ValueKind != JsonValueKind.Object)
+        if (!usageElement.TryGetProperty("input_tokens", out _)
+            && !usageElement.TryGetProperty("output_tokens", out _)
+            && !usageElement.TryGetProperty("total_tokens", out _))
         {
             return null;
         }
