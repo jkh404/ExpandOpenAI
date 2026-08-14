@@ -21,7 +21,7 @@ internal sealed class OpenAICompatibleEmbeddingResponseParser
             return ParseDashScopeEmbeddingsResponse(root, dashScopeEmbeddings, modelId);
         }
 
-        throw new JsonException("Embedding response does not contain a data array or output.embeddings array.");
+        throw new JsonException($"Embedding response does not contain a data array or output.embeddings array.HttpBody:{root.GetRawText()}");
     }
 
     public GeneratedEmbeddings<Embedding<float>> ParseDashScopeMultimodalResponse(
@@ -33,7 +33,7 @@ internal sealed class OpenAICompatibleEmbeddingResponseParser
             || !outputElement.TryGetProperty("embeddings", out var embeddingsElement)
             || embeddingsElement.ValueKind != JsonValueKind.Array)
         {
-            throw new JsonException("DashScope multimodal embedding response does not contain output.embeddings array.");
+            throw new JsonException($"DashScope multimodal embedding response does not contain output.embeddings array.HttpBody:{root.GetRawText()}");
         }
 
         return ParseDashScopeEmbeddingsResponse(root, embeddingsElement, modelId);
