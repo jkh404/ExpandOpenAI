@@ -598,9 +598,83 @@ Responses 客户端还支持 `HostedFileContent`、普通文件 `DataContent` / 
 - 音频会被序列化为 `input_audio`
 - 不支持的内容类型会抛出 `NotSupportedException`
 
+### 图片
+
+`DataContent` 图片会被编码为 data URI 写入 `image_url.url`，`UriContent` 图片直接使用原始 URL。
+
+`AIContent.AdditionalProperties` 中的 `detail` 会按 OpenAI 规范写入 `image_url` 内部：
+
+```csharp
+var image = new UriContent("https://example.test/cat.png", "image/png")
+{
+    AdditionalProperties = new AdditionalPropertiesDictionary { ["detail"] = "high" },
+};
+```
+
+生成结果：
+
+```json
+{"type":"image_url","image_url":{"url":"https://example.test/cat.png","detail":"high"}}
+```
+
+### 音频
+
+音频片段遵循 OpenAI 规范：`input_audio.data` 为**纯 base64 数据**，音频格式由 `input_audio.format` 表达。
+
+- `DataContent` 音频：`data` 取字节的 base64，`format` 由媒体类型推导
+- `UriContent` 音频且 URI 为 `data:` 形式：自动剥离 data URI 前缀后写入 `data`
+- `UriContent` 音频且 URI 为 `http(s)`：OpenAI 未定义远程音频输入，此处保留 `input_audio.url` 形状并附带 `format`，供支持该扩展的兼容服务使用
+
+`format` 的映射规则：`audio/mpeg`、`audio/mpga` → `mp3`，`audio/wav`、`audio/x-wav` → `wav`，`audio/x-m4a` → `m4a`，其余取媒体类型子类型（忽略 `;` 之后的参数）。
+
+```csharp
+var message = new ChatMessage(ChatRole.User)
+{
+    Contents = [new DataContent(File.ReadAllBytes("sample.mp3"), "audio/mpeg")],
+};
+```
+
+生成结果：
+
+```json
+{"type":"input_audio","input_audio":{"data":"SUQzBAAAAAAAI1RTU0UAAAAP...","format":"mp3"}}
+```
+
+### 额外属性
+
+`AIContent.AdditionalProperties` 会合并到对应的内容片段：
+
+- 默认写入片段顶层，例如 `cache_control`、`asr_options` 等厂商扩展字段
+- 若片段中同名键本身是 JSON 对象且新值也是 JSON 对象，则合并进该嵌套对象（例如 `image_url`），不会覆盖 `url`
+- `detail` 是特例，图片场景下写入 `image_url` 内部
+- `openai_payload` 用于**整体替换**片段结构，与工具序列化保持一致，适合结构差异较大的服务
+
+`openai_payload` 示例（DashScope 兼容模式要求 `input_audio.data` 为 data URI）：
+
+```csharp
+var audio = new DataContent(File.ReadAllBytes("sample.mp3"), "audio/mpeg")
+{
+    AdditionalProperties = new AdditionalPropertiesDictionary
+    {
+        ["openai_payload"] = new JsonObject
+        {
+            ["type"] = "input_audio",
+            ["input_audio"] = new JsonObject
+            {
+                ["data"] = $"data:audio/mpeg;base64,{Convert.ToBase64String(File.ReadAllBytes("sample.mp3"))}",
+            },
+        },
+    },
+};
+```
+
+只有消息内容全部为纯文本且未携带额外属性时，`content` 才会折叠为字符串；否则统一输出内容片段数组，避免丢失额外属性。
+
 ## DashScope 音频示例
 
 仓库中已经提供了 `DashScopeAudioContent`，用于构造 DashScope 兼容接口所需的音频输入片段。
+
+DashScope 兼容模式的 `input_audio` 只使用 `data`（data URI 或公网 URL），不识别 `format` 字段，因此 `DashScopeAudioContent` 不会输出 `format`；如需在默认构造器上直接发送该形状，可参考上一节的 `openai_payload` 用法。
 
 ```csharp
 using ExpandOpenAI;

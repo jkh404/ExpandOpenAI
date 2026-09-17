@@ -8,6 +8,12 @@ namespace ExpandOpenAI.Internal;
 
 internal sealed class OpenAICompatibleRequestBuilder
 {
+    /// <summary>内容片段整体替换用的额外属性键，与工具序列化保持一致。</summary>
+    private const string OpenAIPayloadKey = "openai_payload";
+
+    /// <summary>OpenAI 图片细节参数，需写入 <c>image_url</c> 内部。</summary>
+    private const string ImageDetailKey = "detail";
+
     private readonly OpenAICompatibleChatClientOptions _options;
     private readonly JsonSerializerOptions _serializerOptions;
 
@@ -199,7 +205,7 @@ internal sealed class OpenAICompatibleRequestBuilder
             return null;
         }
 
-        if (visibleContents.All(static content => content is TextContent))
+        if (CanCollapseToPlainText(visibleContents))
         {
             var text = string.Concat(visibleContents.Cast<TextContent>().Select(content => content.Text));
             return JsonValue.Create(text);
@@ -218,48 +224,222 @@ internal sealed class OpenAICompatibleRequestBuilder
         return parts;
     }
 
+    /// <summary>
+    /// 只有当所有内容都是纯文本且未携带额外属性时才折叠为字符串，否则会丢失 <see cref="AIContent.AdditionalProperties"/>。
+    /// </summary>
+    private static bool CanCollapseToPlainText(IList<AIContent> contents)
+    {
+        foreach (var content in contents)
+        {
+            if (content is not TextContent || content.AdditionalProperties is { Count: > 0 })
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     private JsonObject? SerializeContentPart(AIContent content)
     {
-        return content switch
+        var part = CreateContentPart(content);
+        return part is null ? null : ApplyAdditionalProperties(part, content);
+    }
+
+    private JsonObject CreateContentPart(AIContent content)
+    {
+        switch (content)
         {
-            OpenAIRequestContent custom => custom.SerializeToOpenAIRequestContentPart(_serializerOptions),
-            TextContent text => new JsonObject
-            {
-                ["type"] = "text",
-                ["text"] = text.Text,
-            },
-            DataContent data when data.HasTopLevelMediaType("image") => new JsonObject
-            {
-                ["type"] = "image_url",
-                ["image_url"] = new JsonObject
+            case OpenAIRequestContent custom:
+                return custom.SerializeToOpenAIRequestContentPart(_serializerOptions);
+
+            case TextContent text:
+                return new JsonObject
                 {
-                    ["url"] = data.Uri,
-                },
-            },
-            UriContent uri when uri.HasTopLevelMediaType("image") => new JsonObject
+                    ["type"] = "text",
+                    ["text"] = text.Text,
+                };
+
+            case DataContent data when data.HasTopLevelMediaType("image"):
+                return CreateImagePart(data.Uri);
+
+            case UriContent uri when uri.HasTopLevelMediaType("image"):
+                return CreateImagePart(uri.Uri.ToString());
+
+            case DataContent data when data.HasTopLevelMediaType("audio"):
+                // OpenAI 要求 input_audio.data 为纯 base64 数据，音频格式通过 format 字段表达。
+                return CreateAudioPart(data.Base64Data.ToString(), data.MediaType);
+
+            case UriContent uri when uri.HasTopLevelMediaType("audio"):
+                return CreateAudioPart(uri);
+
+            default:
+                throw new NotSupportedException(
+                    $"当前内容类型 {content.GetType().FullName} 未实现默认 OpenAI 兼容序列化，请自定义请求构造逻辑。");
+        }
+    }
+
+    private static JsonObject CreateImagePart(string url)
+    {
+        return new JsonObject
+        {
+            ["type"] = "image_url",
+            ["image_url"] = new JsonObject
             {
-                ["type"] = "image_url",
-                ["image_url"] = new JsonObject
-                {
-                    ["url"] = uri.Uri.ToString(),
-                },
+                ["url"] = url,
             },
-            DataContent data when data.HasTopLevelMediaType("audio") => new JsonObject
-            {
-                ["type"] = "input_audio",
-                ["input_audio"] = new JsonObject
-                {
-                    ["data"] = data.Uri,
-                },
-            },
-            UriContent uri when uri.HasTopLevelMediaType("audio") => new JsonObject
-            {
-                ["type"] = "input_audio",
-                ["input_audio"] = SerializeAudioInput(uri),
-            },
-            _ => throw new NotSupportedException(
-                $"当前内容类型 {content.GetType().FullName} 未实现默认 OpenAI 兼容序列化，请自定义请求构造逻辑。"),
         };
+    }
+
+    private static JsonObject CreateAudioPart(string base64Data, string? mediaType)
+    {
+        var inputAudio = new JsonObject
+        {
+            ["data"] = base64Data,
+        };
+
+        if (GetAudioFormat(mediaType) is { Length: > 0 } format)
+        {
+            inputAudio["format"] = format;
+        }
+
+        return new JsonObject
+        {
+            ["type"] = "input_audio",
+            ["input_audio"] = inputAudio,
+        };
+    }
+
+    private static JsonObject CreateAudioPart(UriContent content)
+    {
+        if (string.Equals(content.Uri.Scheme, "data", StringComparison.OrdinalIgnoreCase))
+        {
+            return CreateAudioPart(ExtractBase64Data(content), content.MediaType);
+        }
+
+        // OpenAI 未定义远程音频输入，这里保留 url 形状，供支持该扩展的兼容服务使用。
+        var inputAudio = new JsonObject
+        {
+            ["url"] = content.Uri.ToString(),
+        };
+
+        if (GetAudioFormat(content.MediaType) is { Length: > 0 } format)
+        {
+            inputAudio["format"] = format;
+        }
+
+        return new JsonObject
+        {
+            ["type"] = "input_audio",
+            ["input_audio"] = inputAudio,
+        };
+    }
+
+    private static string ExtractBase64Data(UriContent content)
+    {
+        try
+        {
+            return new DataContent(content.Uri, content.MediaType).Base64Data.ToString();
+        }
+        catch (Exception exception) when (exception is ArgumentException or FormatException or InvalidOperationException)
+        {
+            throw new InvalidOperationException($"无法解析音频 data URI：{content.Uri}", exception);
+        }
+    }
+
+    /// <summary>
+    /// 把内容对象上的 <see cref="AIContent.AdditionalProperties"/> 合并到内容片段。
+    /// </summary>
+    /// <remarks>
+    /// 规则：
+    /// <list type="bullet">
+    /// <item><c>openai_payload</c> 与工具序列化保持一致，用于整体替换片段结构。</item>
+    /// <item>图片的 <c>detail</c> 按 OpenAI 规范写入 <c>image_url</c> 内部。</item>
+    /// <item>其余键值默认写入片段顶层；若片段中同名键本身是 JSON 对象且新值也是 JSON 对象，则合并到该嵌套对象内部。</item>
+    /// </list>
+    /// </remarks>
+    private JsonObject ApplyAdditionalProperties(JsonObject part, AIContent content)
+    {
+        var properties = content.AdditionalProperties;
+        if (properties is null || properties.Count == 0)
+        {
+            return part;
+        }
+
+        if (properties.TryGetValue(OpenAIPayloadKey, out var rawPayload))
+        {
+            part = ToJsonObject(OpenAIPayloadKey, rawPayload);
+        }
+
+        var imageUrl = part["image_url"] as JsonObject;
+
+        foreach (var pair in properties)
+        {
+            if (string.Equals(pair.Key, OpenAIPayloadKey, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var value = SerializePropertyValue(pair.Value);
+
+            if (imageUrl is not null && string.Equals(pair.Key, ImageDetailKey, StringComparison.Ordinal))
+            {
+                imageUrl[ImageDetailKey] = value;
+                continue;
+            }
+
+            if (part[pair.Key] is JsonObject nested && value is JsonObject nestedValue)
+            {
+                foreach (var nestedPair in nestedValue)
+                {
+                    nested[nestedPair.Key] = CloneNode(nestedPair.Value);
+                }
+
+                continue;
+            }
+
+            part[pair.Key] = value;
+        }
+
+        return part;
+    }
+
+    private JsonNode? SerializePropertyValue(object? value)
+    {
+        return value switch
+        {
+            null => null,
+            JsonNode node => CloneNode(node),
+            JsonElement element when element.ValueKind == JsonValueKind.Undefined => null,
+            JsonElement element => JsonNode.Parse(element.GetRawText()),
+            _ => JsonSerializer.SerializeToNode(value, _serializerOptions),
+        };
+    }
+
+    private JsonObject ToJsonObject(string propertyName, object? value)
+    {
+        var node = value switch
+        {
+            null => null,
+            JsonObject jsonObject => CloneObject(jsonObject),
+            JsonElement element when element.ValueKind == JsonValueKind.Object
+                => JsonNode.Parse(element.GetRawText()) as JsonObject,
+            _ => JsonSerializer.SerializeToNode(value, _serializerOptions) as JsonObject,
+        };
+
+        return node ?? throw new InvalidOperationException(
+            $"AdditionalProperties[\"{propertyName}\"] 必须是 JSON 对象。");
+    }
+
+    private static JsonNode? CloneNode(JsonNode? node)
+    {
+        return node is null ? null : JsonNode.Parse(node.ToJsonString());
+    }
+
+    private static JsonObject CloneObject(JsonObject value)
+    {
+        return JsonNode.Parse(value.ToJsonString()) as JsonObject
+            ?? throw new InvalidOperationException("无法复制 OpenAI 请求 JSON 对象。");
     }
 
     private void SerializeToolResultMessage(ChatMessage message, JsonObject node)
@@ -323,7 +503,7 @@ internal sealed class OpenAICompatibleRequestBuilder
                 continue;
             }
 
-            if (tool.AdditionalProperties?.TryGetValue("openai_payload", out var rawToolPayload) == true)
+            if (tool.AdditionalProperties?.TryGetValue(OpenAIPayloadKey, out var rawToolPayload) == true)
             {
                 array.Add(JsonSerializer.SerializeToNode(rawToolPayload, _serializerOptions));
                 continue;
@@ -467,31 +647,38 @@ internal sealed class OpenAICompatibleRequestBuilder
         }
     }
 
-    private JsonObject SerializeAudioInput(UriContent uri)
+    private static string? GetAudioFormat(string? mediaType)
     {
-        if (string.Equals(uri.Uri.Scheme, "data", StringComparison.OrdinalIgnoreCase))
+        if (string.IsNullOrWhiteSpace(mediaType))
         {
-            return new JsonObject
-            {
-                ["data"] = uri.Uri.ToString(),
-            };
+            return null;
         }
 
-        return new JsonObject
-        {
-            ["url"] = uri.Uri.ToString(),
-            ["format"] = GetAudioFormat(uri.MediaType),
-        };
-    }
+        var effectiveMediaType = mediaType!;
+        var slashIndex = effectiveMediaType.IndexOf('/');
+        var subtype = slashIndex >= 0
+            ? effectiveMediaType.Substring(slashIndex + 1)
+            : effectiveMediaType;
 
-    private static string? GetAudioFormat(string mediaType)
-    {
-        var subtype = mediaType.Substring(mediaType.IndexOf('/') + 1).Trim().ToLowerInvariant();
+        // 去掉 audio/wav;codecs=1 这类参数。
+        var parameterIndex = subtype.IndexOf(';');
+        if (parameterIndex >= 0)
+        {
+            subtype = subtype.Substring(0, parameterIndex);
+        }
+
+        subtype = subtype.Trim().ToLowerInvariant();
+        if (subtype.Length == 0)
+        {
+            return null;
+        }
+
         return subtype switch
         {
             "mpeg" => "mp3",
             "mpga" => "mp3",
             "x-wav" => "wav",
+            "x-m4a" => "m4a",
             _ => subtype,
         };
     }
