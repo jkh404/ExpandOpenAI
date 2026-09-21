@@ -1,6 +1,6 @@
 # ExpandOpenAI
 
-`ExpandOpenAI` 是一个面向 OpenAI Compatible 接口的轻量级 `IChatClient`、`IEmbeddingGenerator<string, Embedding<float>>`、多模态 embedding 与 reranking 实现，基于 `Microsoft.Extensions.AI` 构建，适合接入 OpenAI、阿里云 DashScope 兼容模式，以及其他遵循 `/chat/completions`、`/responses`、`/embeddings`、`/reranks` 协议的模型服务。
+`ExpandOpenAI` 是一个面向 OpenAI Compatible 接口的轻量级 `IChatClient`、`IEmbeddingGenerator<string, Embedding<float>>`、Decisions AI、多模态 embedding 与 reranking 实现，基于 `Microsoft.Extensions.AI` 构建，适合接入 OpenAI、OpenRouter/TypeSafe、阿里云 DashScope 兼容模式，以及其他遵循 `/chat/completions`、`/responses`、`/embeddings`、`/reranks` 协议的模型服务。
 
 它的目标不是重新发明一套 SDK，而是把“兼容 OpenAI 的 HTTP 接口”包装成标准的 `IChatClient`、`IEmbeddingGenerator` 和轻量 reranker，方便你继续使用 `ChatMessage`、`ChatOptions`、流式输出、工具调用、多模态内容、向量生成和重排序。
 
@@ -11,6 +11,7 @@
 - 实现 `Microsoft.Extensions.AI.IEmbeddingGenerator<string, Embedding<float>>`
 - 多模态向量同时提供 `IMultimodalEmbeddingGenerator` 和 `IEmbeddingGenerator<AIContent, Embedding<float>>`
 - 提供 OpenAI Compatible `/reranks` 重排序客户端
+- 提供 OpenRouter Alpha.Decisions / TypeSafe System One 决策模型客户端
 - 支持普通响应和流式响应
 - 支持 OpenAI Compatible embeddings 请求
 - 支持 DashScope 向量的 `output.embeddings` 响应；文本 `GenerateAsync` 与多模态 `GenerateMultimodalAsync` 均可解析
@@ -395,6 +396,113 @@ var generator = new OpenAICompatibleEmbeddingGenerator();
 using var generator = new OpenAICompatibleEmbeddingGenerator(
     OpenAICompatibleEmbeddingGeneratorOptions.FromMultimodalEnvironment());
 ```
+
+## Decisions AI / TypeSafe System One
+
+`DecisionsAIClient` 提供独立的 `DecisionsRequest` / `DecisionsResponse` 契约，默认 POST 到 `https://openrouter.ai/api/alpha/decisions`。每次请求把一个 state 和多个独立问题一起发送，返回按问题 ID 索引的强类型答案。它不实现 `IChatClient`，不生成聊天文本，也不提供流式接口。
+
+| 问题 / 答案类型 | criteria | 结果 |
+| --- | --- | --- |
+| `DecisionsNoulQuestion` / `DecisionsNoulAnswer` | 可省略；提供时用 `DecisionsNoulCriteria.True/False` 描述两个结果 | `Noul` 是为真的概率（0～1），阈值由业务代码决定 |
+| `DecisionsChoiceQuestion` / `DecisionsChoiceAnswer` | 选项名到描述的字典，最多 255 个选项 | `Choice`、可选 `Confidence` 和 `Probabilities` |
+| `DecisionsScoreQuestion` / `DecisionsScoreAnswer` | 2～10 个描述组成的有序数组，下标从 0 开始 | `Score` 可以是小数；另有可选 `Confidence`、`Probabilities`、`Legend` |
+
+state 接受字符串、JSON 对象或数组。所有问题的 `Instructions`、Choice 的每个选项描述、Score 的每个等级描述、Noul 的 True/False 描述，均按 TypeSafe 的 EntryType 支持字符串、对象、数组或 null。可以直接传匿名对象、字典、数组、`JsonElement` 或 `JsonNode`，无需先转成 JSON 字符串。Score 的概率和 legend 保留协议中的字符串下标；legend 值为 `JsonElement`，可读取结构化描述。
+
+```csharp
+using ExpandOpenAI;
+
+using var decisions = new DecisionsAIClient(new DecisionsAIClientOptions
+{
+    Endpoint = new Uri("https://openrouter.ai/api"),
+    ApiKey = "<openrouter-api-key>",
+    ModelId = "typesafe/jev-1.13",
+});
+
+var response = await decisions.GetResponseAsync(
+    new DecisionsRequest
+    {
+        State = new
+        {
+            ticket = "The checkout page is blank after clicking Pay.",
+            customer_tier = "enterprise",
+        },
+        Questions = new Dictionary<string, DecisionsQuestion>
+        {
+            ["is_bug"] = new DecisionsNoulQuestion
+            {
+                Instructions = "Is the customer reporting a software defect?",
+                Criteria = new DecisionsNoulCriteria
+                {
+                    True = "Broken or unexpected product behavior",
+                    False = "A question or feature request",
+                },
+            },
+            ["team"] = new DecisionsChoiceQuestion
+            {
+                Instructions = new
+                {
+                    question = "Which team should own this ticket?",
+                    focus = "The reported product behavior",
+                },
+                Criteria = new Dictionary<string, object?>
+                {
+                    ["frontend"] = new
+                    {
+                        description = "Rendering, layout, or browser compatibility issues",
+                        examples = new[] { "blank page", "broken layout" },
+                    },
+                    ["payments"] = "Checkout, billing, or payment processing issues",
+                    ["account"] = "Login, permissions, or profile issues",
+                },
+            },
+            ["urgency"] = new DecisionsScoreQuestion
+            {
+                Instructions = "How urgent is this ticket?",
+                Criteria = new object?[]
+                {
+                    "Can wait for the next release",
+                    "Should be fixed this week",
+                    "Blocking revenue right now",
+                },
+            },
+        },
+    });
+
+var isBug = ((DecisionsNoulAnswer)response.Answers["is_bug"]).Noul;
+var team = ((DecisionsChoiceAnswer)response.Answers["team"]).Choice;
+var urgency = ((DecisionsScoreAnswer)response.Answers["urgency"]).Score;
+Console.WriteLine($"bug={isBug}, team={team}, urgency={urgency}");
+```
+
+入口配置如下，模型 ID 原样发送：
+
+| 服务 | Endpoint | RequestPath | 模型示例 |
+| --- | --- | --- | --- |
+| OpenRouter Alpha.Decisions（默认） | `https://openrouter.ai/api` | `alpha/decisions` | `typesafe/jev-1.13` 或 `~typesafe/jev-latest` |
+| OpenRouter System One | `https://openrouter.ai/api` | `v1/systemone` | `jev-latest` |
+| TypeSafe 直连 | `https://api.typesafe.ai` | `v1/systemone` | `jev-latest` |
+
+当 Endpoint 已包含完整请求路径时，设置 `RequestPath = string.Empty`；RequestPath 也支持绝对 URL。使用 TypeSafe 直连需要显式设置对应的 ModelId 和 API key。
+
+`DecisionsRequest.ModelId` 可覆盖单次请求的模型；省略时使用客户端默认值，客户端不会改写传入的请求对象。也支持 `GetResponseAsync(state, questions, cancellationToken)` 简写。OpenRouter 的 `Provider`、`User`、`SessionId`、`Trace` 可在请求中设置，Provider/Trace 使用对象或字典，字段名遵循 OpenRouter 协议。
+
+通过 `new DecisionsAIClient()` 或 `DecisionsAIClientOptions.FromEnvironment()` 读取环境变量：
+
+- `OPENROUTER_API_KEY`：OpenRouter API key；代码配置也可使用自定义认证头
+- `OPENROUTER_DECISIONS_MODEL`：其次回退到 `OPENROUTER_MODEL`，默认 `~typesafe/jev-latest`
+- `OPENROUTER_ENDPOINT`：默认 `https://openrouter.ai/api`
+- `OPENROUTER_DECISIONS_REQUEST_PATH`：默认 `alpha/decisions`，TypeSafe 入口使用 `v1/systemone`
+
+未设置 OPENROUTER_ENDPOINT 且设置了 `TYPESAFE_BASE_URL` 时，使用该基地址、`TYPESAFE_API_KEY`、默认路径 `v1/systemone` 和默认模型 `jev-latest`；显式的模型和路径环境变量仍可覆盖默认值。若同时配置两套环境变量，OPENROUTER_ENDPOINT 优先并使用 OPENROUTER_API_KEY。
+
+客户端复用现有 `OpenAICompatibleHttpRetryOptions`，支持 CancellationToken、注入 HttpClient/HttpMessageHandler、自定义认证头、Headers 和请求钩子。注入 HttpClient 时默认由调用方管理生命周期。扩展字段按全局 `RequestBody`、单次 `AdditionalProperties`、强类型字段的顺序合并；model/state/questions 始终取本次请求，随后 `ConfigureRequestBody` 可对最终 JSON 做高级修改。
+
+响应包含实际 `ModelId`、可选 Id/Provider，以及输入/输出 token 数和可选 Cost。响应、答案和 usage 的未知字段保留在 AdditionalProperties；新出现的答案类型返回 `DecisionsUnknownAnswer.Raw`。已知答案缺少必需值、数值类型错误或概率越界时抛出 JsonException；HTTP 失败则抛出包含状态码及响应正文的 HttpRequestException。
+
+这些接口仍会随供应商演进。TypeSafe 文档允许 null EntryType；OpenRouter Alpha.Decisions 当前的 SDK schema 对 instructions、Score 等级和 Noul criteria 描述更严格，使用该入口时应提供非 null 描述。Choice 的选项描述可为 null。客户端保留 TypeSafe 的完整输入形状，由所选服务校验其具体限制。
+
+参考：[OpenRouter TypeSafe 接入](https://openrouter.ai/docs/guides/community/typesafe-sdk)、[Alpha.Decisions](https://openrouter.ai/docs/client-sdks/go/sdks/decisions/README#alpha-decisions)、[System One](https://docs.typesafe.ai/concepts/system-one)、[Choice](https://docs.typesafe.ai/primitives/choice)、[Score](https://docs.typesafe.ai/primitives/score)、[Noul](https://docs.typesafe.ai/primitives/noul)、[Advanced structure](https://docs.typesafe.ai/primitives/advanced)。
 
 ## 重排序模型
 

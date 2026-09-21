@@ -4,7 +4,7 @@
 
 | 包 | 项目 | README | 说明 |
 | --- | --- | --- | --- |
-| `ExpandOpenAI` | `ExpandOpenAI/ExpandOpenAI.csproj` | `ExpandOpenAI/README.md` | OpenAI Compatible Chat Completions、Responses API、embeddings 和 reranking 实现，基于 `Microsoft.Extensions.AI`。 |
+| `ExpandOpenAI` | `ExpandOpenAI/ExpandOpenAI.csproj` | `ExpandOpenAI/README.md` | OpenAI Compatible Chat Completions、Responses API、Decisions AI、embeddings 和 reranking 实现，基于 `Microsoft.Extensions.AI`。 |
 | `ExpandOpenAI.AgentFramework` | `ExpandOpenAI.AgentFramework/ExpandOpenAI.AgentFramework.csproj` | `ExpandOpenAI.AgentFramework/README.md` | Agent 基础设施类库，提供独立会话、分层记忆、按轮次历史压缩和工具审批。 |
 | `ExpandVectorStore.Qdrant` | `ExpandVectorStore.Qdrant/ExpandVectorStore.Qdrant.csproj` | `ExpandVectorStore.Qdrant/README.md` | Qdrant vector store provider，基于 `Microsoft.Extensions.VectorData`。 |
 
@@ -12,7 +12,7 @@
 
 ## 项目结构
 
-- `ExpandOpenAI/`：核心 OpenAI Compatible Chat Completions、Responses API、embeddings 和 reranking 包。
+- `ExpandOpenAI/`：核心 OpenAI Compatible Chat Completions、Responses API、Decisions AI、embeddings 和 reranking 包。
 - `ExpandOpenAI.AgentFramework/`：依赖核心包的 Agent 抽象与默认实现。
 - `ExpandOpenAI.AgentFramework.Demo/`：本机 Web 小说撰写智能体示例；它在指定工作区内用文件与 HTTP 工具自主创作，跨启动保存多会话与压缩摘要，并分别展示会话记忆和跨小说偏好记忆。
 - `ExpandVectorStore.Qdrant/`：Qdrant 向量存储包。
