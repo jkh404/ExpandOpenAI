@@ -8,6 +8,25 @@ namespace ExpandOpenAI.Tests;
 public sealed class DecisionsAIClientTests
 {
     [Fact]
+    public void Options_RequireEndpointAndModelAndDefaultToSystemOnePath()
+    {
+        var options = new DecisionsAIClientOptions();
+
+        Assert.Null(options.Endpoint);
+        Assert.Equal("v1/systemone", options.RequestPath);
+        Assert.Null(options.ModelId);
+        using var httpClient = new HttpClient();
+        Assert.Throws<ArgumentNullException>(() => new DecisionsAIClient(httpClient, options));
+        options.Endpoint = new Uri("https://gateway.example.test/api");
+        Assert.Throws<ArgumentException>(() => new DecisionsAIClient(httpClient, options));
+
+        using var client = new DecisionsAIClient("decision-model", "gateway-key", options.Endpoint);
+        var clientOptions = Assert.IsType<DecisionsAIClientOptions>(
+            client.GetService(typeof(DecisionsAIClientOptions)));
+        Assert.Equal("v1/systemone", clientOptions.RequestPath);
+    }
+
+    [Fact]
     public async Task Request_UsesDecisionsWireFormatAndSupportsStructuredPrimitives()
     {
         string? body = null;
@@ -27,10 +46,10 @@ public sealed class DecisionsAIClientTests
             handler,
             new DecisionsAIClientOptions
             {
-                Endpoint = new Uri("https://openrouter.ai/api"),
-                ModelId = "typesafe/jev-1.13",
+                Endpoint = new Uri("https://gateway.example.test/api"),
+                ModelId = "decision-model",
                 ApiKey = "test-key",
-                RequestPath = "alpha/decisions",
+                RequestPath = "custom/decisions",
                 RetryOptions = NoRetryOptions(),
             });
 
@@ -71,12 +90,12 @@ public sealed class DecisionsAIClientTests
                 Trace = new { trace_name = "triage" },
             });
 
-        Assert.Equal("https://openrouter.ai/api/alpha/decisions", uri?.ToString());
+        Assert.Equal("https://gateway.example.test/api/custom/decisions", uri?.ToString());
         Assert.Equal("Bearer test-key", authorization);
         Assert.NotNull(body);
         using var document = JsonDocument.Parse(body!);
         var root = document.RootElement;
-        Assert.Equal("typesafe/jev-1.13", root.GetProperty("model").GetString());
+        Assert.Equal("decision-model", root.GetProperty("model").GetString());
         Assert.Equal("The checkout page is blank.", root.GetProperty("state").GetProperty("ticket").GetString());
         Assert.Equal("noul", root.GetProperty("questions").GetProperty("is_bug").GetProperty("type").GetString());
         Assert.Equal("Is this a bug?", root.GetProperty("questions").GetProperty("is_bug")
@@ -97,8 +116,8 @@ public sealed class DecisionsAIClientTests
         using var handler = new DelegateHttpMessageHandler((_, _, _) => Task.FromResult(JsonResponse("""
             {
               "id":"gen-dec-1",
-              "model":"typesafe/jev-1.13.0",
-              "provider":"TypeSafe",
+              "model":"decision-model-v2",
+              "provider":"test-provider",
               "answers":{
                 "refund":{"type":"noul","noul":0.98},
                 "team":{"type":"choice","choice":"billing","confidence":0.8,"probabilities":{"billing":0.8,"technical":0.2}},
@@ -122,8 +141,8 @@ public sealed class DecisionsAIClientTests
             });
 
         Assert.Equal("gen-dec-1", response.Id);
-        Assert.Equal("TypeSafe", response.Provider);
-        Assert.Equal("typesafe/jev-1.13.0", response.ModelId);
+        Assert.Equal("test-provider", response.Provider);
+        Assert.Equal("decision-model-v2", response.ModelId);
         Assert.Equal(0.98, Assert.IsType<DecisionsNoulAnswer>(response.Answers["refund"]).Noul);
         var choice = Assert.IsType<DecisionsChoiceAnswer>(response.Answers["team"]);
         Assert.Equal("billing", choice.Choice);
@@ -167,9 +186,9 @@ public sealed class DecisionsAIClientTests
     }
 
     [Theory]
-    [InlineData("https://openrouter.ai/api", "alpha/decisions", "https://openrouter.ai/api/alpha/decisions")]
-    [InlineData("https://openrouter.ai/api/", "v1/systemone", "https://openrouter.ai/api/v1/systemone")]
-    [InlineData("https://api.typesafe.ai", "v1/systemone", "https://api.typesafe.ai/v1/systemone")]
+    [InlineData("https://gateway.example.test/api", "custom/decisions", "https://gateway.example.test/api/custom/decisions")]
+    [InlineData("https://gateway.example.test/api/", "v1/systemone", "https://gateway.example.test/api/v1/systemone")]
+    [InlineData("https://service.example.test", "v1/systemone", "https://service.example.test/v1/systemone")]
     [InlineData("https://example.test/systemone?version=1", "", "https://example.test/systemone?version=1")]
     [InlineData("https://example.test", "https://proxy.test/decision", "https://proxy.test/decision")]
     public async Task Request_RoutesConfiguredEndpoints(string endpoint, string path, string expected)
@@ -203,7 +222,7 @@ public sealed class DecisionsAIClientTests
             return JsonResponse(MinimalResponse);
         });
         var options = CreateOptions();
-        options.Endpoint = new Uri("https://api.typesafe.ai");
+        options.Endpoint = new Uri("https://service.example.test");
         options.RequestPath = "v1/systemone";
         using var client = new DecisionsAIClient(handler, options);
         var request = new DecisionsRequest
@@ -256,7 +275,7 @@ public sealed class DecisionsAIClientTests
         var request = CreateRequest();
         request.ModelId = "override-model";
         request.State = shared;
-        request.Provider = new { only = new[] { "TypeSafe" } };
+        request.Provider = new { only = new[] { "test-provider" } };
         request.AdditionalProperties = new Dictionary<string, object?>
         {
             ["state"] = "ignored",
@@ -277,7 +296,7 @@ public sealed class DecisionsAIClientTests
         Assert.True(root.GetProperty("questions").TryGetProperty("is_bug", out _));
         Assert.Equal("request", root.GetProperty("extension").GetString());
         Assert.True(root.GetProperty("hook").GetBoolean());
-        Assert.Equal("TypeSafe", root.GetProperty("provider").GetProperty("only")[0].GetString());
+        Assert.Equal("test-provider", root.GetProperty("provider").GetProperty("only")[0].GetString());
     }
 
     [Theory]
@@ -352,10 +371,10 @@ public sealed class DecisionsAIClientTests
     }
 
     [Fact]
-    public async Task Response_AcceptsMinimalTypeSafeAnswersWithoutOptionalOpenRouterFields()
+    public async Task Response_AcceptsMinimalAnswersWithoutOptionalMetadata()
     {
         using var handler = new DelegateHttpMessageHandler((_, _, _) => Task.FromResult(JsonResponse("""
-            {"model":"jev-latest","answers":{"choice":{"type":"choice","choice":"team"},"score":{"type":"score","score":0}}}
+            {"model":"decision-model","answers":{"choice":{"type":"choice","choice":"team"},"score":{"type":"score","score":0}}}
             """)));
         using var client = new DecisionsAIClient(handler, CreateOptions());
         var response = await client.GetResponseAsync(CreateRequest());
@@ -424,46 +443,38 @@ public sealed class DecisionsAIClientTests
     }
 
     [Fact]
-    public void Environment_SelectsMatchingEndpointModelAndCredentials()
+    public void Environment_RequiresExplicitEndpointAndModelAndUsesGenericConfiguration()
     {
         string[] names =
         [
             DecisionsAIClient.ApiKeyEnvironmentVariable, DecisionsAIClient.ModelEnvironmentVariable,
-            DecisionsAIClient.ModelFallbackEnvironmentVariable, DecisionsAIClient.EndpointEnvironmentVariable,
-            DecisionsAIClient.RequestPathEnvironmentVariable, DecisionsAIClient.TypeSafeApiKeyEnvironmentVariable,
-            DecisionsAIClient.TypeSafeBaseUrlEnvironmentVariable,
+            DecisionsAIClient.EndpointEnvironmentVariable, DecisionsAIClient.RequestPathEnvironmentVariable,
         ];
         var previous = names.ToDictionary(name => name, Environment.GetEnvironmentVariable);
         try
         {
             foreach (var name in names) Environment.SetEnvironmentVariable(name, null);
-            var defaults = DecisionsAIClientOptions.FromEnvironment();
-            Assert.Equal("https://openrouter.ai/api/", defaults.Endpoint.AbsoluteUri);
-            Assert.Equal("alpha/decisions", defaults.RequestPath);
-            Assert.Equal("~typesafe/jev-latest", defaults.ModelId);
+            var missingEndpoint = Assert.Throws<InvalidOperationException>(DecisionsAIClientOptions.FromEnvironment);
+            Assert.Contains("DECISIONS_ENDPOINT", missingEndpoint.Message);
 
-            Environment.SetEnvironmentVariable(DecisionsAIClient.TypeSafeBaseUrlEnvironmentVariable, "https://api.typesafe.ai");
-            Environment.SetEnvironmentVariable(DecisionsAIClient.TypeSafeApiKeyEnvironmentVariable, "typesafe-key");
-            Environment.SetEnvironmentVariable(DecisionsAIClient.ApiKeyEnvironmentVariable, "router-key");
-            var direct = DecisionsAIClientOptions.FromEnvironment();
-            Assert.Equal("https://api.typesafe.ai/", direct.Endpoint.AbsoluteUri);
-            Assert.Equal("v1/systemone", direct.RequestPath);
-            Assert.Equal("jev-latest", direct.ModelId);
-            Assert.Equal("typesafe-key", direct.ApiKey);
+            Environment.SetEnvironmentVariable(DecisionsAIClient.EndpointEnvironmentVariable, "https://gateway.example.test/api");
+            var missingModel = Assert.Throws<InvalidOperationException>(DecisionsAIClientOptions.FromEnvironment);
+            Assert.Contains("DECISIONS_MODEL", missingModel.Message);
 
-            Environment.SetEnvironmentVariable(DecisionsAIClient.EndpointEnvironmentVariable, "https://proxy.test/api");
-            Environment.SetEnvironmentVariable(DecisionsAIClient.ModelFallbackEnvironmentVariable, "fallback-model");
-            var router = DecisionsAIClientOptions.FromEnvironment();
-            Assert.Equal("https://proxy.test/api", router.Endpoint.AbsoluteUri);
-            Assert.Equal("alpha/decisions", router.RequestPath);
-            Assert.Equal("router-key", router.ApiKey);
-            Assert.Equal("fallback-model", router.ModelId);
+            Environment.SetEnvironmentVariable(DecisionsAIClient.ModelEnvironmentVariable, "custom-model");
+            var options = DecisionsAIClientOptions.FromEnvironment();
+            Assert.Equal("https://gateway.example.test/api", options.Endpoint.AbsoluteUri);
+            Assert.Equal("v1/systemone", options.RequestPath);
+            Assert.Equal("custom-model", options.ModelId);
+            Assert.Null(options.ApiKey);
 
+            Environment.SetEnvironmentVariable(DecisionsAIClient.ApiKeyEnvironmentVariable, "gateway-key");
             Environment.SetEnvironmentVariable(DecisionsAIClient.ModelEnvironmentVariable, "explicit-model");
-            Environment.SetEnvironmentVariable(DecisionsAIClient.RequestPathEnvironmentVariable, "v1/systemone");
+            Environment.SetEnvironmentVariable(DecisionsAIClient.RequestPathEnvironmentVariable, "custom/decisions");
             var explicitOptions = DecisionsAIClientOptions.FromEnvironment();
             Assert.Equal("explicit-model", explicitOptions.ModelId);
-            Assert.Equal("v1/systemone", explicitOptions.RequestPath);
+            Assert.Equal("custom/decisions", explicitOptions.RequestPath);
+            Assert.Equal("gateway-key", explicitOptions.ApiKey);
             Environment.SetEnvironmentVariable(DecisionsAIClient.EndpointEnvironmentVariable, "/relative");
             Assert.Throws<InvalidOperationException>(DecisionsAIClientOptions.FromEnvironment);
         }
@@ -487,7 +498,7 @@ public sealed class DecisionsAIClientTests
         return new DecisionsAIClientOptions
         {
             Endpoint = new Uri("https://example.test/api"),
-            ModelId = "typesafe/jev-1.13",
+            ModelId = "decision-model",
             RetryOptions = NoRetryOptions(),
         };
     }
@@ -503,7 +514,7 @@ public sealed class DecisionsAIClientTests
     }
 
     private const string MinimalResponse = """
-        {"model":"typesafe/jev-1.13","answers":{"is_bug":{"type":"noul","noul":0.1}},"usage":{"input_tokens":1,"output_tokens":1}}
+        {"model":"decision-model","answers":{"is_bug":{"type":"noul","noul":0.1}},"usage":{"input_tokens":1,"output_tokens":1}}
         """;
 
     private static HttpResponseMessage JsonResponse(string json)

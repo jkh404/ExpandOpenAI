@@ -15,12 +15,12 @@ public sealed class DecisionsRequest
 
     public required IReadOnlyDictionary<string, DecisionsQuestion> Questions { get; set; }
 
-    /// <summary>Optional OpenRouter provider routing preferences, as a JSON object.</summary>
+    /// <summary>Optional provider routing preferences supported by the endpoint, as a JSON object.</summary>
     public object? Provider { get; set; }
 
     public string? SessionId { get; set; }
 
-    /// <summary>Optional OpenRouter tracing metadata, as a JSON object.</summary>
+    /// <summary>Optional tracing metadata supported by the endpoint, as a JSON object.</summary>
     public object? Trace { get; set; }
 
     public string? User { get; set; }
@@ -29,12 +29,12 @@ public sealed class DecisionsRequest
     public IReadOnlyDictionary<string, object?>? AdditionalProperties { get; set; }
 }
 
-/// <summary>Base for the three System One primitives.</summary>
+/// <summary>Base for the three decision question types.</summary>
 public abstract class DecisionsQuestion
 {
     public abstract string Type { get; }
 
-    /// <summary>String, JSON object, JSON array, or null, as specified by TypeSafe's EntryType.</summary>
+    /// <summary>Instructions as a string, JSON object, JSON array, or null.</summary>
     public object? Instructions { get; set; }
 
     public IReadOnlyDictionary<string, object?>? AdditionalProperties { get; set; }
@@ -48,7 +48,7 @@ public sealed class DecisionsNoulQuestion : DecisionsQuestion
     public DecisionsNoulCriteria? Criteria { get; set; }
 }
 
-/// <summary>Optional descriptions of both outcomes. Each description accepts an EntryType.</summary>
+/// <summary>Optional descriptions of both outcomes. Each accepts a string, object, array, or null.</summary>
 public sealed class DecisionsNoulCriteria
 {
     [JsonPropertyName("true")]
@@ -77,7 +77,7 @@ public sealed class DecisionsScoreQuestion : DecisionsQuestion
     public required IReadOnlyList<object?> Criteria { get; set; }
 }
 
-/// <summary>Response returned by a Decisions or System One endpoint.</summary>
+/// <summary>Response returned by a Decisions-compatible endpoint.</summary>
 public sealed class DecisionsResponse
 {
     public string? Id { get; init; }
@@ -134,7 +134,7 @@ public sealed class DecisionsScoreAnswer : DecisionsAnswer
     public IReadOnlyDictionary<string, JsonElement>? Legend { get; init; }
 }
 
-/// <summary>Preserves an unknown answer type for forward compatibility with the alpha API.</summary>
+/// <summary>Preserves an unknown answer type for forward compatibility with the endpoint.</summary>
 public sealed class DecisionsUnknownAnswer : DecisionsAnswer
 {
     public DecisionsUnknownAnswer(string type, JsonElement raw)
@@ -156,7 +156,7 @@ public sealed class DecisionsUsage
 
     public long TotalTokens => InputTokens + OutputTokens;
 
-    /// <summary>Optional request cost reported by OpenRouter.</summary>
+    /// <summary>Optional request cost reported by the endpoint.</summary>
     public double? Cost { get; init; }
 
     public AdditionalPropertiesDictionary? AdditionalProperties { get; init; }

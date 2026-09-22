@@ -8,23 +8,24 @@ namespace ExpandOpenAI;
 /// </summary>
 public class DecisionsAIClientOptions
 {
-    public const string ApiKeyEnvironmentVariable = "OPENROUTER_API_KEY";
-    public const string ModelEnvironmentVariable = "OPENROUTER_DECISIONS_MODEL";
-    public const string ModelFallbackEnvironmentVariable = "OPENROUTER_MODEL";
-    public const string EndpointEnvironmentVariable = "OPENROUTER_ENDPOINT";
-    public const string RequestPathEnvironmentVariable = "OPENROUTER_DECISIONS_REQUEST_PATH";
-    public const string TypeSafeApiKeyEnvironmentVariable = "TYPESAFE_API_KEY";
-    public const string TypeSafeBaseUrlEnvironmentVariable = "TYPESAFE_BASE_URL";
-
-    public Uri Endpoint { get; set; } = new("https://openrouter.ai/api/");
+    public const string ApiKeyEnvironmentVariable = "DECISIONS_API_KEY";
+    public const string ModelEnvironmentVariable = "DECISIONS_MODEL";
+    public const string EndpointEnvironmentVariable = "DECISIONS_ENDPOINT";
+    public const string RequestPathEnvironmentVariable = "DECISIONS_REQUEST_PATH";
 
     /// <summary>
-    /// Relative to <see cref="Endpoint"/>. The OpenRouter Alpha.Decisions endpoint is the default.
-    /// TypeSafe's direct endpoint can be selected with <c>v1/systemone</c>.
+    /// API base address. It is intentionally unset for manually constructed options;
+    /// configure it explicitly or use <see cref="FromEnvironment"/>.
     /// </summary>
-    public string RequestPath { get; set; } = "alpha/decisions";
+    public Uri Endpoint { get; set; } = null!;
 
-    public string ModelId { get; set; } = "~typesafe/jev-latest";
+    /// <summary>
+    /// Relative to <see cref="Endpoint"/>; defaults to <c>v1/systemone</c>.
+    /// Use an empty string when Endpoint is the complete request URL.
+    /// </summary>
+    public string RequestPath { get; set; } = "v1/systemone";
+
+    public string ModelId { get; set; } = null!;
 
     public string? ApiKey { get; set; }
 
@@ -50,37 +51,27 @@ public class DecisionsAIClientOptions
 
     public static DecisionsAIClientOptions FromEnvironment()
     {
-        var typeSafeBaseUrl = Environment.GetEnvironmentVariable(TypeSafeBaseUrlEnvironmentVariable);
         var endpointValue = Environment.GetEnvironmentVariable(EndpointEnvironmentVariable);
-        var useTypeSafeDefaults = string.IsNullOrWhiteSpace(endpointValue)
-            && !string.IsNullOrWhiteSpace(typeSafeBaseUrl);
-        if (useTypeSafeDefaults)
+        if (string.IsNullOrWhiteSpace(endpointValue))
         {
-            endpointValue = typeSafeBaseUrl;
+            throw new InvalidOperationException($"环境变量 {EndpointEnvironmentVariable} 未设置。");
         }
-        var endpoint = string.IsNullOrWhiteSpace(endpointValue)
-            ? new Uri("https://openrouter.ai/api/")
-            : CreateEndpoint(endpointValue!, useTypeSafeDefaults
-                ? TypeSafeBaseUrlEnvironmentVariable : EndpointEnvironmentVariable);
+
+        var endpoint = CreateEndpoint(endpointValue!, EndpointEnvironmentVariable);
 
         var model = Environment.GetEnvironmentVariable(ModelEnvironmentVariable);
+        var requestPath = Environment.GetEnvironmentVariable(RequestPathEnvironmentVariable) ?? "v1/systemone";
         if (string.IsNullOrWhiteSpace(model))
         {
-            model = Environment.GetEnvironmentVariable(ModelFallbackEnvironmentVariable);
+            throw new InvalidOperationException($"环境变量 {ModelEnvironmentVariable} 未设置。");
         }
-
-        var requestPath = Environment.GetEnvironmentVariable(RequestPathEnvironmentVariable);
-        requestPath ??= useTypeSafeDefaults ? "v1/systemone" : "alpha/decisions";
-
-        var defaultModel = useTypeSafeDefaults ? "jev-latest" : "~typesafe/jev-latest";
 
         return new DecisionsAIClientOptions
         {
             Endpoint = endpoint,
             RequestPath = requestPath,
-            ModelId = string.IsNullOrWhiteSpace(model) ? defaultModel : model!,
-            ApiKey = Environment.GetEnvironmentVariable(useTypeSafeDefaults
-                ? TypeSafeApiKeyEnvironmentVariable : ApiKeyEnvironmentVariable),
+            ModelId = model!,
+            ApiKey = Environment.GetEnvironmentVariable(ApiKeyEnvironmentVariable),
         };
     }
 

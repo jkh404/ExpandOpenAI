@@ -5,17 +5,14 @@ using Microsoft.Extensions.AI;
 namespace ExpandOpenAI;
 
 /// <summary>
-/// HTTP client for OpenRouter's Alpha.Decisions endpoint and TypeSafe System One.
+/// HTTP client for a Decisions-compatible HTTP endpoint.
 /// </summary>
 public sealed class DecisionsAIClient : IDisposable
 {
     public const string ApiKeyEnvironmentVariable = DecisionsAIClientOptions.ApiKeyEnvironmentVariable;
     public const string ModelEnvironmentVariable = DecisionsAIClientOptions.ModelEnvironmentVariable;
-    public const string ModelFallbackEnvironmentVariable = DecisionsAIClientOptions.ModelFallbackEnvironmentVariable;
     public const string EndpointEnvironmentVariable = DecisionsAIClientOptions.EndpointEnvironmentVariable;
     public const string RequestPathEnvironmentVariable = DecisionsAIClientOptions.RequestPathEnvironmentVariable;
-    public const string TypeSafeApiKeyEnvironmentVariable = DecisionsAIClientOptions.TypeSafeApiKeyEnvironmentVariable;
-    public const string TypeSafeBaseUrlEnvironmentVariable = DecisionsAIClientOptions.TypeSafeBaseUrlEnvironmentVariable;
 
     private readonly HttpClient _httpClient;
     private readonly bool _disposeHttpClient;
@@ -48,7 +45,7 @@ public sealed class DecisionsAIClient : IDisposable
         string modelId,
         string apiKey,
         Uri endpoint,
-        string requestPath = "alpha/decisions")
+        string requestPath = "v1/systemone")
         : this(new DecisionsAIClientOptions
         {
             ModelId = modelId,
