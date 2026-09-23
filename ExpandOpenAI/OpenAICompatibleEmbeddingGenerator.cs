@@ -33,13 +33,13 @@ public class OpenAICompatibleEmbeddingGenerator :
 
     public HttpClient HttpClient => _httpClient;
 
-    public OpenAICompatibleEmbeddingGenerator()
-        : this(OpenAICompatibleEmbeddingGeneratorOptions.FromEnvironment())
+    public OpenAICompatibleEmbeddingGenerator(TimeSpan? timeout=null)
+        : this(OpenAICompatibleEmbeddingGeneratorOptions.FromEnvironment(), timeout)
     {
     }
 
-    public OpenAICompatibleEmbeddingGenerator(OpenAICompatibleEmbeddingGeneratorOptions options)
-        : this(new HttpClient(), options, disposeHttpClient: true)
+    public OpenAICompatibleEmbeddingGenerator(OpenAICompatibleEmbeddingGeneratorOptions options, TimeSpan? timeout = null)
+        : this(new HttpClient() { Timeout = timeout ?? TimeSpan.FromMinutes(5) }, options, disposeHttpClient: true)
     {
     }
 

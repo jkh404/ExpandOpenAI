@@ -24,13 +24,13 @@ public class OpenAICompatibleChatClient : IChatClient
     private bool _disposed;
 
     public HttpClient HttpClient => _httpClient;
-    public OpenAICompatibleChatClient()
-        : this(OpenAICompatibleChatClientOptions.FromEnvironment())
+    public OpenAICompatibleChatClient(TimeSpan? timeout = null)
+        : this(OpenAICompatibleChatClientOptions.FromEnvironment(), timeout)
     {
     }
 
-    public OpenAICompatibleChatClient(OpenAICompatibleChatClientOptions options)
-        : this(new HttpClient(), options, disposeHttpClient: true)
+    public OpenAICompatibleChatClient(OpenAICompatibleChatClientOptions options,TimeSpan? timeout=null)
+        : this(new HttpClient() { Timeout=timeout?? TimeSpan.FromMinutes(5) }, options, disposeHttpClient: true)
     {
     }
 

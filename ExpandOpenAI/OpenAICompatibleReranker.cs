@@ -25,13 +25,13 @@ public class OpenAICompatibleReranker : IDisposable
 
     public HttpClient HttpClient => _httpClient;
 
-    public OpenAICompatibleReranker()
-        : this(OpenAICompatibleRerankerOptions.FromEnvironment())
+    public OpenAICompatibleReranker(TimeSpan? timeout = null)
+        : this(OpenAICompatibleRerankerOptions.FromEnvironment(), timeout)
     {
     }
 
-    public OpenAICompatibleReranker(OpenAICompatibleRerankerOptions options)
-        : this(new HttpClient(), options, disposeHttpClient: true)
+    public OpenAICompatibleReranker(OpenAICompatibleRerankerOptions options,TimeSpan? timeout=null)
+        : this(new HttpClient() { Timeout=timeout?? TimeSpan.FromMinutes(5) }, options, disposeHttpClient: true)
     {
     }
 

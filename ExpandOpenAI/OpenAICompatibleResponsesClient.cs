@@ -25,13 +25,13 @@ public class OpenAICompatibleResponsesClient : IChatClient
     private readonly OpenAICompatibleResponsesResponseParser _responseParser;
     private bool _disposed;
 
-    public OpenAICompatibleResponsesClient()
-        : this(OpenAICompatibleResponsesClientOptions.FromEnvironment())
+    public OpenAICompatibleResponsesClient(TimeSpan? timeout = null)
+        : this(OpenAICompatibleResponsesClientOptions.FromEnvironment(), timeout)
     {
     }
 
-    public OpenAICompatibleResponsesClient(OpenAICompatibleResponsesClientOptions options)
-        : this(new HttpClient(), options, disposeHttpClient: true)
+    public OpenAICompatibleResponsesClient(OpenAICompatibleResponsesClientOptions options,TimeSpan? timeout=null)
+        : this(new HttpClient() { Timeout=timeout?? TimeSpan.FromMinutes(5) }, options, disposeHttpClient: true)
     {
     }
 
